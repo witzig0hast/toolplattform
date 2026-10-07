@@ -55,6 +55,18 @@
       <label>Beschreibung
         <input id="f-desc" maxlength="200" placeholder="Wofür ist das Tool?">
       </label>
+      <div class="lbl">Art des Tools</div>
+      <div class="seg" role="radiogroup" aria-label="Art des Tools">
+        <label class="opt-radio"><input type="radio" name="type" value="static" checked><span><strong>Dateien</strong><small>Eigene Webseite aus <code>sites/&lt;pfad&gt;/</code></small></span></label>
+        <label class="opt-radio"><input type="radio" name="type" value="proxy"><span><strong>Weiterleitung</strong><small>Leitet an einen laufenden Dienst weiter</small></span></label>
+      </div>
+      <div id="proxy-fields" hidden>
+        <label>Ziel-Adresse
+          <input id="f-upstream" maxlength="255" placeholder="http://mein-container:8080">
+          <small>Container-Name oder IP mit Port, ohne Pfad. Der Container muss im Docker-Netzwerk <code>toolplattform_tools</code> hängen.</small>
+        </label>
+        <label class="check"><input type="checkbox" id="f-strip" checked><span>Pfad-Präfix entfernen<small>Der Dienst bekommt <code>/</code> statt <code>/&lt;pfad&gt;/</code>. Abschalten, wenn der Dienst selbst unter einem Unterpfad läuft.</small></span></label>
+      </div>
       <div class="two">
         <label class="narrow">Symbol <span class="opt">optional</span>
           <input id="f-icon" maxlength="8" placeholder="🏠">

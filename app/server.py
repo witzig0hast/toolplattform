@@ -7,7 +7,9 @@
 Vertraut den Headern X-Authentik-Username / X-Authentik-Groups. Darf deshalb nur
 über den tools-web-Container erreichbar sein (siehe docker-compose.yml).
 """
+import hmac
 import html
+import ipaddress
 import json
 import os
 import re
@@ -20,6 +22,10 @@ from urllib.parse import unquote, urlsplit
 DATA_FILE = Path(os.environ.get("TOOLS_DATA", "/data/tools.json"))
 SITES_DIR = Path(os.environ.get("TOOLS_SITES", "/srv/sites"))
 ADMIN_GROUP = os.environ.get("ADMIN_GROUP", "tools-admin")
+# Gemeinsames Geheimnis zwischen NPM und tools-web: ohne es gelten Authentik-Header nicht
+TOOLS_SECRET = os.environ.get("TOOLS_SECRET", "")
+# Interner nginx-Server (nur im Container erreichbar), der die statischen Tool-Dateien ausliefert
+STATIC_UPSTREAM = "http://127.0.0.1:8081"
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
 RESERVED_SLUGS = {"api", "admin", "assets"}
@@ -58,16 +64,51 @@ def clean_text(value, field, max_len, required=False):
     return value
 
 
+UPSTREAM_RE = re.compile(r"^https?://([A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)(:([0-9]{1,5}))?$")
+BLOCKED_HOSTS = {"localhost", "tools-web", "tools-api", "metadata.google.internal"}
+
+
+def validate_upstream(value):
+    value = clean_text(value, "Ziel-Adresse", 255, required=True)
+    m = UPSTREAM_RE.match(value)
+    if not m:
+        raise ValueError("Ziel-Adresse muss so aussehen: http://name-oder-ip:port (ohne Pfad)")
+    host, port = m.group(1).lower(), m.group(4)
+    if port and not 1 <= int(port) <= 65535:
+        raise ValueError("Ungültiger Port")
+    if host in BLOCKED_HOSTS or host.endswith(".localhost"):
+        raise ValueError("Diese Ziel-Adresse ist nicht erlaubt")
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast:
+            raise ValueError("Diese Ziel-Adresse ist nicht erlaubt")
+    except ValueError as e:
+        if "nicht erlaubt" in str(e):
+            raise
+    return value
+
+
 def validate_tool(body):
     group = clean_text(body.get("group", ""), "Gruppe", 64, required=True)
     if "|" in group:
         raise ValueError("Gruppe darf kein '|' enthalten")
-    return {
+    kind = body.get("type", "static")
+    if kind not in ("static", "proxy"):
+        raise ValueError("Typ muss 'static' oder 'proxy' sein")
+    tool = {
         "name": clean_text(body.get("name", ""), "Name", 60, required=True),
         "description": clean_text(body.get("description", ""), "Beschreibung", 200),
         "icon": clean_text(body.get("icon", ""), "Symbol", 8),
         "group": group,
+        "type": kind,
     }
+    if kind == "proxy":
+        tool["upstream"] = validate_upstream(body.get("upstream"))
+        strip = body.get("strip_prefix", True)
+        if not isinstance(strip, bool):
+            raise ValueError("strip_prefix muss true oder false sein")
+        tool["strip_prefix"] = strip
+    return tool
 
 
 # ---------- Rechte ----------
@@ -80,17 +121,41 @@ def can_see(tool, groups):
 
 
 def authorize_path(raw_uri, groups):
-    """Darf jemand mit diesen Gruppen den Pfad aus der Original-URL aufrufen?"""
-    path = unquote(urlsplit(raw_uri).path)
+    """Gibt die Ziel-URL für nginx zurück, wenn der Zugriff erlaubt ist, sonst None.
+
+    raw_uri ist $request_uri von nginx (Pfad + Query, so wie der Client ihn geschickt hat).
+    """
+    if not raw_uri.startswith("/") or "#" in raw_uri:
+        return None
+    raw_path, _, query = raw_uri.partition("?")
+    # Kodierte Schrägstriche/Backslashes/Null-Bytes nie zulassen (Segmentierung wäre uneindeutig)
+    if re.search(r"%2f|%5c|%00", raw_path, re.I):
+        return None
+    path = unquote(raw_path)
     segments = path.split("/")
     # Pfad muss sauber sein: kein '..', '.', '//' oder Null-Byte (sonst Umgehung via Normalisierung)
-    if not path.startswith("/") or "\0" in path or "\\" in path:
-        return False
+    if "\0" in path or "\\" in path:
+        return None
     if any(s in ("", ".", "..") for s in segments[1:-1]) or segments[-1] in (".", ".."):
-        return False
+        return None
     slug = segments[1] if len(segments) > 1 else ""
     tool = load_tools().get(slug)
-    return bool(tool) and can_see(tool, groups)
+    if not tool or not can_see(tool, groups):
+        return None
+    # Der Slug muss im Rohpfad wörtlich (nicht kodiert) vorkommen
+    prefix = "/" + slug
+    if not raw_path.startswith(prefix) or (len(raw_path) > len(prefix) and raw_path[len(prefix)] != "/"):
+        return None
+    suffix = ("?" + query) if query else ""
+    if tool.get("type", "static") == "proxy":
+        base = tool["upstream"]
+        rest = raw_path[len(prefix):] if tool.get("strip_prefix", True) else raw_path
+        return base + (rest or "/") + suffix
+    return STATIC_UPSTREAM + raw_path + suffix
+
+
+def secret_ok(header_value):
+    return bool(TOOLS_SECRET) and hmac.compare_digest(header_value.encode(), TOOLS_SECRET.encode())
 
 
 def ensure_site_dir(slug, name):
@@ -119,12 +184,14 @@ class Handler(BaseHTTPRequestHandler):
         groups = [g for g in self.headers.get("X-Authentik-Groups", "").split("|") if g]
         return name, groups
 
-    def send_json(self, status, payload=None):
+    def send_json(self, status, payload=None, extra=None):
         body = json.dumps(payload if payload is not None else {}, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
@@ -147,13 +214,17 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and urlsplit(self.path).path == "/healthz":
             return self.send_json(200, {"ok": True})
         username, groups = self.user()
+        if not secret_ok(self.headers.get("X-Tools-Secret", "")):
+            return self.send_json(403, {"error": "Anfrage nicht über den Proxy gekommen"})
         if not username:
             return self.send_json(401, {"error": "nicht angemeldet"})
         path = urlsplit(self.path).path
 
         if method == "GET" and path == "/authz":
-            ok = authorize_path(self.headers.get("X-Original-URI", ""), groups)
-            return self.send_json(200 if ok else 403)
+            target = authorize_path(self.headers.get("X-Original-URI", ""), groups)
+            if not target:
+                return self.send_json(403)
+            return self.send_json(200, extra={"X-Tool-Target": target})
         if method == "GET" and path == "/authz-admin":
             return self.send_json(200 if is_admin(groups) else 403)
 
@@ -185,7 +256,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if method == "GET" and slug is None:
                 tools = load_tools()
-                return self.send_json(200, [{"slug": s, **t} for s, t in sorted(tools.items())])
+                return self.send_json(200, [{"slug": s, "type": "static", **t} for s, t in sorted(tools.items())])
             if method == "POST" and slug is None:
                 body = self.read_body()
                 new_slug = body.get("slug", "")
@@ -197,7 +268,8 @@ class Handler(BaseHTTPRequestHandler):
                     if new_slug in tools:
                         raise ValueError("Slug existiert bereits")
                     tools[new_slug] = tool
-                    ensure_site_dir(new_slug, tool["name"])
+                    if tool["type"] == "static":
+                        ensure_site_dir(new_slug, tool["name"])
                     save_tools(tools)
                 return self.send_json(201, {"slug": new_slug, **tool})
             if method == "PUT" and slug:
@@ -207,6 +279,8 @@ class Handler(BaseHTTPRequestHandler):
                     if slug not in tools:
                         return self.send_json(404, {"error": "Tool nicht gefunden"})
                     tools[slug] = tool
+                    if tool["type"] == "static":
+                        ensure_site_dir(slug, tool["name"])
                     save_tools(tools)
                 return self.send_json(200, {"slug": slug, **tool})
             if method == "DELETE" and slug:

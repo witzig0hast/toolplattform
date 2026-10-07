@@ -1,7 +1,6 @@
-# Zwei Container, beide aus eigenen Images (docker compose build):
-#   tools-web  nginx mit eingebautem Portal; liefert Tool-Dateien aus und prüft Rechte über tools-api.
-#              Kein veröffentlichter Port - nur der Nginx Proxy Manager erreicht ihn.
-#   tools-api  kleines Python-Backend (Tool-Liste, Rechte, Admin-API). Nur im internen Netz.
+# tools-web:  nginx, liefert Portal + Tool-Dateien aus bzw. leitet an Tool-Container weiter, prüft Rechte über tools-api.
+#             Kein veröffentlichter Port - nur der Nginx Proxy Manager erreicht ihn.
+# tools-api:  kleines Python-Backend (Tool-Liste, Rechte, Admin-API). Nur im internen Netz.
 # Bind-Mounts nur für das, was du selbst pflegst: ./sites (Tool-Dateien) und ./data (Tool-Liste).
 name: toolplattform
 
@@ -22,7 +21,7 @@ services:
     tmpfs: [/tmp]
     volumes:
       - ./sites:/srv/sites:ro
-    networks: [npm, internal]
+    networks: [npm, internal, tools]
 
   tools-api:
     build: ./app
@@ -32,6 +31,7 @@ services:
     user: "${TOOLS_UID:-1000}:${TOOLS_GID:-1000}"
     environment:
       ADMIN_GROUP: ${ADMIN_GROUP:-tools-admin}
+      TOOLS_SECRET: ${TOOLS_SECRET:?TOOLS_SECRET in .env setzen (openssl rand -hex 32)}
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     read_only: true
@@ -47,3 +47,6 @@ networks:
     external: true
   internal:
     internal: true
+  # Gemeinsames Netz für Tool-Container, an die weitergeleitet werden soll
+  tools:
+    name: toolplattform_tools

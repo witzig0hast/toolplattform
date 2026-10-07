@@ -87,7 +87,7 @@ code { font-family: var(--mono); font-size: .88em; background: var(--surface-2);
 .tcell-tool .tile { width: 38px; height: 38px; font-size: 1rem; border-radius: 10px; }
 .tcell-tool .t { min-width: 0; }
 .tcell-tool .t strong { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tcell-tool .t span { display: block; color: var(--muted); font-size: .84rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tcell-tool .t > span { display: block; color: var(--muted); font-size: .84rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mono { font-family: var(--mono); font-size: .84rem; overflow: hidden; text-overflow: ellipsis; text-decoration: none; }
 .mono:hover { text-decoration: underline; }
 .pill { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 2px 10px; font-size: .8rem; font-weight: 500; }
@@ -109,12 +109,23 @@ label small { display: block; font-weight: 400; color: var(--muted); margin-top:
 .opt { font-weight: 400; color: var(--muted); font-size: .78rem; }
 input { width: 100%; margin-top: 5px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--text); font: inherit; font-weight: 400; }
 input::placeholder { color: color-mix(in srgb, var(--muted) 70%, transparent); }
+input[type=radio], input[type=checkbox] { width: auto; margin: 3px 0 0; accent-color: var(--accent); flex: none; }
 input:disabled { background: var(--surface-2); color: var(--muted); }
 .prefix { display: flex; align-items: center; margin-top: 5px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
 .prefix span { padding-left: 12px; color: var(--muted); font-family: var(--mono); }
 .prefix input { margin: 0; border: 0; background: transparent; font-family: var(--mono); padding-left: 4px; }
 .prefix:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .prefix input:focus-visible { outline: none; }
+.lbl { font-size: .86rem; font-weight: 600; margin-bottom: 6px; }
+.seg { margin: 0 0 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.opt-radio, label.check { display: flex; gap: 10px; align-items: flex-start; margin: 0; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: pointer; font-weight: 400; }
+.opt-radio:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.opt-radio strong { display: block; font-weight: 600; }
+label.check { margin-bottom: 14px; }
+label.check span { font-weight: 600; }
+.chip-proxy { display: inline-block; margin-left: 8px; font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; background: var(--surface-2); color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; vertical-align: 1px; }
+.upstream { color: var(--muted); font-family: var(--mono); font-size: .76rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pathcell { min-width: 0; display: flex; flex-direction: column; }
 .two { display: flex; gap: 12px; }
 label.narrow { flex: 0 0 110px; }
 
@@ -125,6 +136,7 @@ label.narrow { flex: 0 0 110px; }
   .trow { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .trow .tactions { margin-top: 4px; }
   .two { flex-direction: column; gap: 0; }
+  .seg { grid-template-columns: 1fr; }
   label.narrow { flex: 1; }
   .hero { padding-top: 24px; }
 }

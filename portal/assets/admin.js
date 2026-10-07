@@ -40,11 +40,19 @@ async function load() {
       const cell = el('div', 'tcell-tool');
       const info = el('div', 't');
       const name = el('strong', '', t.name);
+      if (t.type === 'proxy') name.append(el('span', 'chip-proxy', 'Proxy'));
       info.append(name, el('span', '', t.description || 'Keine Beschreibung'));
       cell.append(tile(t), info);
 
-      const path = el('a', 'mono', '/' + t.slug + '/');
-      path.href = '/' + encodeURIComponent(t.slug) + '/';
+      const path = el('div', 'pathcell');
+      const link = el('a', 'mono', '/' + t.slug + '/');
+      link.href = '/' + encodeURIComponent(t.slug) + '/';
+      path.append(link);
+      if (t.type === 'proxy') {
+        const up = el('span', 'upstream', '→ ' + t.upstream);
+        up.title = t.upstream;
+        path.append(up);
+      }
       const g = el('div', 'gcell');
       g.append(el('span', 'pill', t.group));
 
@@ -72,6 +80,11 @@ function openDialog(t) {
   $('f-desc').value = t ? t.description : '';
   $('f-icon').value = t ? t.icon : '';
   $('f-group').value = t ? t.group : '';
+  const kind = t && t.type === 'proxy' ? 'proxy' : 'static';
+  document.querySelector(`input[name=type][value=${kind}]`).checked = true;
+  $('f-upstream').value = t && t.upstream ? t.upstream : '';
+  $('f-strip').checked = t && t.type === 'proxy' ? t.strip_prefix !== false : true;
+  syncType();
   if (!t) delete $('f-group').dataset.touched;
   $('dlg-error').hidden = true;
   dlg.showModal();
@@ -89,6 +102,13 @@ function confirmRemove(t) {
   dlgDel.showModal();
 }
 
+function syncType() {
+  const proxy = document.querySelector('input[name=type]:checked').value === 'proxy';
+  $('proxy-fields').hidden = !proxy;
+  $('f-upstream').required = proxy;
+}
+document.querySelectorAll('input[name=type]').forEach(r => r.addEventListener('change', syncType));
+
 // Gruppenname beim Anlegen automatisch vorschlagen
 $('f-slug').addEventListener('input', () => {
   if (!editing && !$('f-group').dataset.touched) $('f-group').value = $('f-slug').value ? 'tool-' + $('f-slug').value : '';
@@ -102,7 +122,9 @@ form.addEventListener('submit', async ev => {
   ev.preventDefault();
   const save = $('save');
   save.disabled = true;
-  const body = { name: $('f-name').value, description: $('f-desc').value, icon: $('f-icon').value, group: $('f-group').value };
+  const type = document.querySelector('input[name=type]:checked').value;
+  const body = { name: $('f-name').value, description: $('f-desc').value, icon: $('f-icon').value, group: $('f-group').value, type };
+  if (type === 'proxy') { body.upstream = $('f-upstream').value.trim(); body.strip_prefix = $('f-strip').checked; }
   try {
     if (editing) await api('PUT', '/api/admin/tools/' + encodeURIComponent(editing), body);
     else await api('POST', '/api/admin/tools', { slug: $('f-slug').value, ...body });

@@ -1,22 +1,21 @@
+# Statischer Webserver für die Tools. Wird NICHT nach außen veröffentlicht (kein "ports:"),
+# nur der Nginx Proxy Manager erreicht ihn über das gemeinsame Docker-Netzwerk.
 services:
-  caddy:
-    image: caddy:2.8-alpine
+  tools-web:
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    container_name: tools-web
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    env_file: .env
     cap_drop: [ALL]
-    cap_add: [NET_BIND_SERVICE]
     security_opt: ["no-new-privileges:true"]
     read_only: true
     tmpfs: [/tmp]
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./access:/etc/caddy/access:ro
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/tools.d:/etc/nginx/tools.d:ro
       - ./sites:/srv/sites:ro
-      - caddy_data:/data
-      - caddy_config:/config
-volumes:
-  caddy_data:
-  caddy_config:
+    networks: [npm]
+
+networks:
+  npm:
+    name: ${NPM_NETWORK:-nginx-proxy-manager_default}
+    external: true

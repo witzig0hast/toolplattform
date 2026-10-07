@@ -52,7 +52,7 @@ Beide haben Healthchecks (`docker compose ps` zeigt `healthy`). Von außen einge
 - `https://tools.example.de/_platform/admin/` – **Verwaltung** (nur Gruppe `tools-admin`): Tools anlegen, bearbeiten, entfernen und je einer Authentik-Gruppe zuordnen.
 
 ### Neues Tool
-1. In `/admin/` auf **+ Neues Tool**: Pfad, Name, Beschreibung, Symbol, Gruppe und die **Art**:
+1. In `/_platform/admin/` auf **+ Neues Tool**: Pfad, Name, Beschreibung, Symbol, Gruppe und die **Art**:
    - **Dateien**: deine Webseite liegt in `sites/<pfad>/` (`index.html` wird als Platzhalter erzeugt).
    - **Weiterleitung**: ein laufender Dienst, z. B. `http://mein-container:8080` (siehe unten).
 2. In Authentik die Gruppe anlegen (falls neu) und Nutzer hinzufügen.

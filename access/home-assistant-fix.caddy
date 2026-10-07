@@ -1,0 +1,8 @@
+handle /home-assistant-fix/* {
+	@allowed header_regexp grp X-Authentik-Groups (^|\|)tool-home-assistant-fix(\||$)
+	handle @allowed {
+		root * /srv/sites
+		file_server
+	}
+	respond "Forbidden" 403
+}

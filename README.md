@@ -32,6 +32,7 @@ docker compose up -d --build   # baut beide Images und startet sie
 1. **Hosts → Proxy Hosts → Add**
    - Domain: `tools.example.de`, Scheme `http`, Forward Hostname `tools-web`, Port `8080`
    - *Block Common Exploits* an
+   - **Cache Assets AUS lassen** (sonst umgeht der NPM den Login für .css/.js-Dateien: Seite ohne Design, 401 bei `/assets/…`)
    - Tab **SSL**: neues Let's-Encrypt-Zertifikat, *Force SSL*, *HTTP/2*, *HSTS* an
 2. Tab **Advanced**: Inhalt von `npm/advanced.conf` einfügen (vorher `AUTHENTIK_IP` ersetzen).
 3. Tab **Custom locations** → *Add location*: `/`, http, `tools-web`, `8080` → Zahnrad ⚙ → Inhalt von `npm/location-root.conf` einfügen. Speichern.

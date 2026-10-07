@@ -28,7 +28,7 @@ async function load() {
   const list = $('list');
   $('error').hidden = true;
   try {
-    const tools = await api('GET', '/api/admin/tools');
+    const tools = await api('GET', '/_platform/api/admin/tools');
     list.replaceChildren();
     if (!tools.length) {
       list.append(el('div', 'table-empty', 'Noch keine Tools angelegt. Mit „Neues Tool“ geht es los.'));
@@ -96,7 +96,7 @@ function confirmRemove(t) {
   dlgDel.returnValue = '';
   dlgDel.onclose = async () => {
     if (dlgDel.returnValue !== 'ok') return;
-    try { await api('DELETE', '/api/admin/tools/' + encodeURIComponent(t.slug)); toast('Tool entfernt'); load(); }
+    try { await api('DELETE', '/_platform/api/admin/tools/' + encodeURIComponent(t.slug)); toast('Tool entfernt'); load(); }
     catch (e) { showError(e.message); }
   };
   dlgDel.showModal();
@@ -126,8 +126,8 @@ form.addEventListener('submit', async ev => {
   const body = { name: $('f-name').value, description: $('f-desc').value, icon: $('f-icon').value, group: $('f-group').value, type };
   if (type === 'proxy') { body.upstream = $('f-upstream').value.trim(); body.strip_prefix = $('f-strip').checked; }
   try {
-    if (editing) await api('PUT', '/api/admin/tools/' + encodeURIComponent(editing), body);
-    else await api('POST', '/api/admin/tools', { slug: $('f-slug').value, ...body });
+    if (editing) await api('PUT', '/_platform/api/admin/tools/' + encodeURIComponent(editing), body);
+    else await api('POST', '/_platform/api/admin/tools', { slug: $('f-slug').value, ...body });
     dlg.close();
     toast(editing ? 'Änderungen gespeichert' : 'Tool angelegt');
     load();

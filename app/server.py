@@ -26,6 +26,7 @@ ADMIN_GROUP = os.environ.get("ADMIN_GROUP", "tools-admin")
 TOOLS_SECRET = os.environ.get("TOOLS_SECRET", "")
 # Interner nginx-Server (nur im Container erreichbar), der die statischen Tool-Dateien ausliefert
 STATIC_UPSTREAM = "http://127.0.0.1:8081"
+COOKIE_NAME = "tools_last"
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
 RESERVED_SLUGS = {"api", "admin", "assets"}
@@ -120,10 +121,22 @@ def can_see(tool, groups):
     return is_admin(groups) or tool["group"] in groups
 
 
-def authorize_path(raw_uri, groups):
-    """Gibt die Ziel-URL für nginx zurück, wenn der Zugriff erlaubt ist, sonst None.
+def parse_cookie(header, name):
+    for part in header.split(";"):
+        k, _, v = part.strip().partition("=")
+        if k == name:
+            return v
+    return ""
+
+
+def resolve_request(raw_uri, groups, referer="", host="", cookie_header=""):
+    """Entscheidet über einen Zugriff und liefert das Ziel für nginx.
 
     raw_uri ist $request_uri von nginx (Pfad + Query, so wie der Client ihn geschickt hat).
+    Rückgabe: None (verboten) oder dict(target, prefix, cookie)
+      target  vollständige Ziel-URL (interner Datei-Server oder Weiterleitungs-Adresse)
+      prefix  "/slug", wenn Weiterleitungs-Antworten (Location) mit diesem Präfix versehen werden sollen
+      cookie  Set-Cookie-Wert (merkt sich das zuletzt genutzte Tool) oder ""
     """
     if not raw_uri.startswith("/") or "#" in raw_uri:
         return None
@@ -136,22 +149,47 @@ def authorize_path(raw_uri, groups):
     # Pfad muss sauber sein: kein '..', '.', '//' oder Null-Byte (sonst Umgehung via Normalisierung)
     if "\0" in path or "\\" in path:
         return None
-    if any(s in ("", ".", "..") for s in segments[1:-1]) or segments[-1] in (".", ".."):
-        return None
-    slug = segments[1] if len(segments) > 1 else ""
-    tool = load_tools().get(slug)
-    if not tool or not can_see(tool, groups):
-        return None
-    # Der Slug muss im Rohpfad wörtlich (nicht kodiert) vorkommen
-    prefix = "/" + slug
-    if not raw_path.startswith(prefix) or (len(raw_path) > len(prefix) and raw_path[len(prefix)] != "/"):
+    if any(seg in ("", ".", "..") for seg in segments[1:-1]) or segments[-1] in (".", ".."):
         return None
     suffix = ("?" + query) if query else ""
-    if tool.get("type", "static") == "proxy":
-        base = tool["upstream"]
-        rest = raw_path[len(prefix):] if tool.get("strip_prefix", True) else raw_path
-        return base + (rest or "/") + suffix
-    return STATIC_UPSTREAM + raw_path + suffix
+    tools = load_tools()
+    slug = segments[1] if len(segments) > 1 else ""
+    tool = tools.get(slug)
+
+    if tool:
+        if not can_see(tool, groups):
+            return None
+        # Der Slug muss im Rohpfad wörtlich (nicht kodiert) vorkommen
+        prefix = "/" + slug
+        if not raw_path.startswith(prefix) or (len(raw_path) > len(prefix) and raw_path[len(prefix)] != "/"):
+            return None
+        if raw_path == prefix:  # /name -> /name/ (relative Links brauchen den Schrägstrich)
+            return {"target": STATIC_UPSTREAM + "/_redirect?to=" + prefix + "/", "prefix": "", "cookie": ""}
+        if tool.get("type", "static") == "proxy":
+            strip = tool.get("strip_prefix", True)
+            rest = raw_path[len(prefix):] if strip else raw_path
+            cookie = ""
+            if strip and parse_cookie(cookie_header, COOKIE_NAME) != slug:
+                cookie = f"{COOKIE_NAME}={slug}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Lax"
+            return {"target": tool["upstream"] + (rest or "/") + suffix,
+                    "prefix": prefix if strip else "", "cookie": cookie}
+        return {"target": STATIC_UPSTREAM + raw_path + suffix, "prefix": "", "cookie": ""}
+
+    # Unbekannter erster Pfadteil: Viele Apps rufen absolute Pfade wie /api/x oder /static/app.js auf.
+    # Dann das zuletzt benutzte Tool nehmen - erst nach Referer, dann nach Merk-Cookie.
+    candidates = []
+    if referer:
+        ref = urlsplit(referer)
+        if ref.netloc == host:
+            ref_parts = unquote(ref.path).split("/")
+            if len(ref_parts) > 1:
+                candidates.append(ref_parts[1])
+    candidates.append(parse_cookie(cookie_header, COOKIE_NAME))
+    for cand in candidates:
+        t = tools.get(cand)
+        if t and t.get("type") == "proxy" and t.get("strip_prefix", True) and can_see(t, groups):
+            return {"target": t["upstream"] + raw_path + suffix, "prefix": "/" + cand, "cookie": ""}
+    return None
 
 
 def secret_ok(header_value):
@@ -221,10 +259,17 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
 
         if method == "GET" and path == "/authz":
-            target = authorize_path(self.headers.get("X-Original-URI", ""), groups)
-            if not target:
+            res = resolve_request(
+                self.headers.get("X-Original-URI", ""), groups,
+                referer=self.headers.get("Referer", ""),
+                host=self.headers.get("Host", ""),
+                cookie_header=self.headers.get("Cookie", ""),
+            )
+            if not res:
                 return self.send_json(403)
-            return self.send_json(200, extra={"X-Tool-Target": target})
+            return self.send_json(200, extra={
+                "X-Tool-Target": res["target"], "X-Tool-Prefix": res["prefix"], "X-Tool-Cookie": res["cookie"],
+            })
         if method == "GET" and path == "/authz-admin":
             return self.send_json(200 if is_admin(groups) else 403)
 

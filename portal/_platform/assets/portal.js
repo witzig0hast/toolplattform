@@ -11,7 +11,7 @@
 
   try {
     const get = u => fetch(u).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
-    const [me, tools] = await Promise.all([get('/api/me'), get('/api/tools')]);
+    const [me, tools] = await Promise.all([get('/_platform/api/me'), get('/_platform/api/tools')]);
 
     $('who').textContent = me.name;
     $('avatar').textContent = initials(me.name);

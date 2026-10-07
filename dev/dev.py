@@ -46,19 +46,30 @@ class Dev(server.Handler):
     def handle_request(self, method):
         path = self.path.split("?")[0]
         _, groups = self.user()
-        if path.startswith("/api/") or path.startswith("/authz") or path == "/healthz":
+        if path.startswith("/_platform/api/"):
+            self.path = self.path[len("/_platform"):]
+            return super().handle_request(method)
+        if path.startswith("/authz") or path == "/healthz":
             return super().handle_request(method)
         if path == "/":
             return self.serve(ROOT / "portal", "index.html")
-        if path.startswith("/assets/"):
+        if path.startswith("/_platform/assets/"):
             return self.serve(ROOT / "portal", path[1:])
-        if path.startswith("/admin"):
+        if path.startswith("/_platform/admin"):
             if not server.is_admin(groups):
                 return self.send_error(403)
             return self.serve(ROOT / "portal", path[1:])
-        target = server.authorize_path(self.path, groups)
-        if not target:
+        res = server.resolve_request(self.path, groups, self.headers.get("Referer", ""),
+                                     self.headers.get("Host", ""), self.headers.get("Cookie", ""))
+        if not res:
             return self.send_error(403)
+        target = res["target"]
+        if "/_redirect?to=" in target:
+            self.send_response(301)
+            self.send_header("Location", target.split("to=", 1)[1])
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if target.startswith(server.STATIC_UPSTREAM):
             return self.serve(ROOT / "sites", path[1:])
         body = f"(Vorschau) Hier würde nach {target} weitergeleitet.".encode()

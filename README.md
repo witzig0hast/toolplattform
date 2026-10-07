@@ -49,7 +49,7 @@ Beide haben Healthchecks (`docker compose ps` zeigt `healthy`). Von außen einge
 
 ## Benutzung
 - `https://tools.example.de/` – **Portal**: Kacheln mit allen Tools, die du nutzen darfst.
-- `https://tools.example.de/admin/` – **Verwaltung** (nur Gruppe `tools-admin`): Tools anlegen, bearbeiten, entfernen und je einer Authentik-Gruppe zuordnen.
+- `https://tools.example.de/_platform/admin/` – **Verwaltung** (nur Gruppe `tools-admin`): Tools anlegen, bearbeiten, entfernen und je einer Authentik-Gruppe zuordnen.
 
 ### Neues Tool
 1. In `/admin/` auf **+ Neues Tool**: Pfad, Name, Beschreibung, Symbol, Gruppe und die **Art**:
@@ -72,11 +72,13 @@ networks:
 ```
 Als Ziel-Adresse trägst du dann `http://mein-tool:<port>` ein (Container-Name aus der Compose-Datei, Port **im** Container). Alternativ geht jede IP im Netzwerk, z. B. `http://192.168.1.50:3000`.
 
+- **Apps mit absoluten Pfaden** (`/api/...`, `/assets/...`, `/static/...`): Viele Apps rufen ihre Daten unter Pfaden ab, die mit `/` beginnen und den Tool-Pfad nicht enthalten. Die Plattform erkennt das: Anfragen an einen unbekannten Pfad gehen an das Tool, aus dem sie kommen (per Referer) bzw. das du zuletzt geöffnet hast (Merk-Cookie `tools_last`, 12 Stunden). Das gilt für Tools mit „Pfad-Präfix entfernen“. Absolute Weiterleitungen (`Location: /login`) bekommen automatisch das Präfix. Grenzen: Wer zwei verschiedene Tools gleichzeitig in zwei Tabs nutzt, kann bei Seiten ohne Referer vertauscht werden; ein Tool, das selbst `https://tools.example.de/...` fest in den Code schreibt, bleibt eine Ausnahme. Für solche Apps ist eine eigene Subdomain die sauberste Lösung.
 - **Pfad-Präfix entfernen** (Standard an): Der Dienst sieht `/`, nicht `/<pfad>/`. Das passt für Dienste, die auf der Wurzel laufen. Läuft der Dienst selbst unter einem Unterpfad (Base-URL `/<pfad>`), schalte es aus. Viele Apps (z. B. Home Assistant) funktionieren unter einem Unterpfad nur eingeschränkt; dann ist eine eigene Subdomain sauberer.
 - Der Dienst bekommt die Header `X-Authentik-Username`, `X-Authentik-Groups`, `X-Authentik-Email` und `X-Authentik-Name`, kann sich also darauf für Single Sign-on stützen.
 - Nicht erlaubte Ziele: `localhost`/Loopback, Link-Local (`169.254.x.x`) sowie `tools-web`/`tools-api`.
 
 ### Update einer bestehenden Installation
+Die Plattform liegt jetzt komplett unter `/_platform/` (Portal-Startseite bleibt `/`), damit Tools Pfade wie `/api` oder `/assets` selbst nutzen können. Die Admin-Seite erreichst du daher unter `/_platform/admin/`.
 ```
 git pull
 # TOOLS_SECRET in .env eintragen (openssl rand -hex 32), dann:

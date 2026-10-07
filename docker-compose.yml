@@ -1,21 +1,41 @@
-# Statischer Webserver für die Tools. Wird NICHT nach außen veröffentlicht (kein "ports:"),
-# nur der Nginx Proxy Manager erreicht ihn über das gemeinsame Docker-Netzwerk.
+# tools-web:  nginx, liefert Portal + Tool-Dateien aus, prüft Rechte über tools-api.
+#             Wird NICHT nach außen veröffentlicht; nur der Nginx Proxy Manager erreicht ihn.
+# tools-api:  kleines Python-Backend (Tool-Liste, Rechte, Admin-API). Nur intern erreichbar.
 services:
   tools-web:
     image: nginxinc/nginx-unprivileged:1.27-alpine
     container_name: tools-web
     restart: unless-stopped
+    depends_on: [tools-api]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     read_only: true
     tmpfs: [/tmp]
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./nginx/tools.d:/etc/nginx/tools.d:ro
+      - ./portal:/srv/portal:ro
       - ./sites:/srv/sites:ro
-    networks: [npm]
+    networks: [npm, internal]
+
+  tools-api:
+    build: ./app
+    container_name: tools-api
+    restart: unless-stopped
+    user: "${TOOLS_UID:-1000}:${TOOLS_GID:-1000}"
+    environment:
+      ADMIN_GROUP: ${ADMIN_GROUP:-tools-admin}
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: [/tmp]
+    volumes:
+      - ./data:/data
+      - ./sites:/srv/sites
+    networks: [internal]
 
 networks:
   npm:
     name: ${NPM_NETWORK:-nginx-proxy-manager_default}
     external: true
+  internal:
+    internal: true

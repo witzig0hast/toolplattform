@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tools verwalten</title>
+<link rel="stylesheet" href="/assets/style.css">
+<script src="/assets/admin.js" defer></script>
+</head>
+<body>
+<header class="bar">
+  <div class="bar-inner">
+    <a class="brand" href="/">🧰 Tools</a>
+    <span class="muted">/ Verwalten</span>
+    <span class="spacer"></span>
+    <button id="new" class="btn primary" type="button">+ Neues Tool</button>
+  </div>
+</header>
+<main>
+  <h1>Tools verwalten</h1>
+  <p class="muted">Jedes Tool gehört zu einer Authentik-Gruppe. Nur Mitglieder dieser Gruppe (und Admins) sehen und öffnen es. Die Dateien eines Tools legst du im Ordner <code>sites/&lt;slug&gt;/</code> auf dem Server ab.</p>
+  <p id="error" class="error" hidden></p>
+  <div id="list" class="list"></div>
+</main>
+
+<dialog id="dlg">
+  <form id="form" method="dialog">
+    <h2 id="dlg-title">Neues Tool</h2>
+    <label>Slug (Teil der URL)
+      <input id="f-slug" required pattern="[a-z0-9][a-z0-9\-]{0,40}" placeholder="home-assistant-fix" autocomplete="off">
+      <small>Nur a–z, 0–9 und „-“. Später nicht änderbar.</small>
+    </label>
+    <label>Name
+      <input id="f-name" required maxlength="60" placeholder="Home Assistant Fix" autocomplete="off">
+    </label>
+    <label>Beschreibung
+      <input id="f-desc" maxlength="200" placeholder="Kurz erklären, wofür das Tool ist" autocomplete="off">
+    </label>
+    <div class="row">
+      <label class="narrow">Symbol
+        <input id="f-icon" maxlength="8" placeholder="🔧" autocomplete="off">
+      </label>
+      <label>Authentik-Gruppe
+        <input id="f-group" required maxlength="64" placeholder="tool-home-assistant-fix" autocomplete="off">
+      </label>
+    </div>
+    <p id="dlg-error" class="error" hidden></p>
+    <div class="actions">
+      <button class="btn" type="button" id="cancel">Abbrechen</button>
+      <button class="btn primary" type="submit">Speichern</button>
+    </div>
+  </form>
+</dialog>
+</body>
+</html>

@@ -6,15 +6,16 @@
 Browser ──► Nginx Proxy Manager ──(fragt)──► Authentik: "ist der eingeloggt?"
                │ ja: Name+Gruppen weiterreichen
                ▼
-           tools-web (dieser Container) ── prüft Gruppe pro Slash ──► Dateien in sites/<slug>/
+           tools-web (nginx) ── fragt tools-api: "Gruppe passt?" ──► Dateien in sites/<slug>/
 ```
 
 ## Einmalige Einrichtung
 
 ### 1. Container starten
 ```
-cp .env.example .env     # NPM_NETWORK anpassen (siehe Kommentar in der Datei)
-docker compose up -d
+cp .env.example .env     # NPM_NETWORK, TOOLS_UID/TOOLS_GID anpassen (Hinweise stehen in der Datei)
+mkdir -p data
+docker compose up -d --build
 ```
 
 ### 2. Authentik: Anwendung für die Subdomain
@@ -25,6 +26,7 @@ docker compose up -d
    - Cookie domain: `example.de`
 2. **Applications → Create**: Name `Tools`, Slug `tools`, Provider `tools`.
 3. **Applications → Outposts** → *authentik Embedded Outpost* → bearbeiten → Anwendung `Tools` hinzufügen.
+4. **Directory → Groups → Create**: Gruppe `tools-admin` (oder wie in `ADMIN_GROUP`) anlegen und dich hinzufügen.
 
 ### 3. Nginx Proxy Manager: Proxy Host
 1. **Hosts → Proxy Hosts → Add**
@@ -34,19 +36,28 @@ docker compose up -d
 2. Tab **Advanced**: Inhalt von `npm/advanced.conf` einfügen (vorher `AUTHENTIK_IP` ersetzen).
 3. Tab **Custom locations** → *Add location*: `/`, http, `tools-web`, `8080` → Zahnrad ⚙ → Inhalt von `npm/location-root.conf` einfügen. Speichern.
 
-## Neues Tool anlegen
-1. `./new-tool.sh mein-tool` (nutzt Gruppe `tool-mein-tool`)
-2. Deine Dateien in `sites/mein-tool/` legen (mindestens `index.html`).
-3. In Authentik: **Directory → Groups → Create** `tool-mein-tool`, Nutzer hinzufügen.
-4. `docker compose exec tools-web nginx -s reload`
+## Benutzung
+- `https://tools.example.de/` – **Portal**: Kacheln mit allen Tools, die du nutzen darfst.
+- `https://tools.example.de/admin/` – **Verwaltung** (nur Gruppe `tools-admin`): Tools anlegen, bearbeiten, entfernen und je einer Authentik-Gruppe zuordnen.
 
-Erreichbar unter `https://tools.example.de/mein-tool/`.
-Dateien in einem bestehenden Tool ändern braucht keinen Reload.
+### Neues Tool
+1. In `/admin/` auf **+ Neues Tool**: Slug, Name, Beschreibung, Symbol, Gruppe.
+2. In Authentik die Gruppe anlegen (falls neu) und Nutzer hinzufügen.
+3. Deine Dateien in `sites/<slug>/` legen (`index.html` wird beim Anlegen als Platzhalter erzeugt).
+Kein Neustart nötig. Rechte-Änderungen in Authentik gelten ab dem nächsten Seitenaufruf.
+
+### Vorschau ohne Docker
+`python3 dev/dev.py` startet Portal + Admin lokal auf http://localhost:8099 mit simuliertem Login
+(`DEV_GROUPS="tool-a|tool-b" python3 dev/dev.py` zum Testen normaler Nutzer; Daten in `dev/data/`).
 
 ## Sicherheit
 - Alles hinter Login. Keine passende Gruppe → 403, unbekannter Pfad → 404.
-- `tools-web` hat keinen veröffentlichten Port; ohne Authentik-Header liefert er nichts (401).
+- `tools-web` hat keinen veröffentlichten Port; ohne Authentik-Header liefert er nichts (401). `tools-api` hängt nur in einem internen Netz ohne Internetzugang.
+- Jede Anfrage auf ein Tool wird vom Backend gegen die Gruppe geprüft; Pfad-Tricks (`..`, `%2e%2e`, `//`) werden abgelehnt.
+- Admin-Änderungen verlangen JSON + passenden `Origin` (Schutz gegen CSRF).
+- Admins (`ADMIN_GROUP`) sehen alle Tools. „Löschen“ entfernt ein Tool nur aus der Liste, Dateien in `sites/` bleiben liegen.
+- Tool-Seiten dürfen Inline-Skripte nutzen (CSP lockerer als bei Portal/Admin), bleiben aber auf die eigene Domain beschränkt.
 - Der NPM überschreibt die Identitäts-Header, Clients können sie nicht fälschen.
 - Wichtig: `tools-web` nicht in weitere Docker-Netze hängen, in denen andere Container sind, denen du nicht traust (sie könnten Header selbst setzen).
 - Eine eigene Authentik-Application pro Slash geht bei Forward-Auth nicht (Authentik ordnet nach Host, nicht Pfad). Darum: eine Application + eine Gruppe pro Tool.
-- Hinweis: Konfiguration wurde noch nicht in einer laufenden Umgebung getestet.
+- Hinweis: Backend, Rechte-Logik und UI sind lokal getestet. Die nginx-/NPM-/Docker-Konfiguration wurde noch nicht in einer laufenden Umgebung getestet.

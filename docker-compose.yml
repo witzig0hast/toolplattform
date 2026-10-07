@@ -1,24 +1,32 @@
-# tools-web:  nginx, liefert Portal + Tool-Dateien aus, prüft Rechte über tools-api.
-#             Wird NICHT nach außen veröffentlicht; nur der Nginx Proxy Manager erreicht ihn.
-# tools-api:  kleines Python-Backend (Tool-Liste, Rechte, Admin-API). Nur intern erreichbar.
+# Zwei Container, beide aus eigenen Images (docker compose build):
+#   tools-web  nginx mit eingebautem Portal; liefert Tool-Dateien aus und prüft Rechte über tools-api.
+#              Kein veröffentlichter Port - nur der Nginx Proxy Manager erreicht ihn.
+#   tools-api  kleines Python-Backend (Tool-Liste, Rechte, Admin-API). Nur im internen Netz.
+# Bind-Mounts nur für das, was du selbst pflegst: ./sites (Tool-Dateien) und ./data (Tool-Liste).
+name: toolplattform
+
 services:
   tools-web:
-    image: nginxinc/nginx-unprivileged:1.27-alpine
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    image: toolplattform-web:latest
     container_name: tools-web
     restart: unless-stopped
-    depends_on: [tools-api]
+    depends_on:
+      tools-api:
+        condition: service_healthy
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     read_only: true
     tmpfs: [/tmp]
     volumes:
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./portal:/srv/portal:ro
       - ./sites:/srv/sites:ro
     networks: [npm, internal]
 
   tools-api:
     build: ./app
+    image: toolplattform-api:latest
     container_name: tools-api
     restart: unless-stopped
     user: "${TOOLS_UID:-1000}:${TOOLS_GID:-1000}"

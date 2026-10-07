@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const dlg = $('dlg'), form = $('form');
-let editing = null; // Slug beim Bearbeiten, sonst null
+const dlg = $('dlg'), dlgDel = $('dlg-del'), form = $('form');
+let editing = null; // Pfad beim Bearbeiten, sonst null
 
 async function api(method, url, body) {
   const res = await fetch(url, {
@@ -14,12 +14,15 @@ async function api(method, url, body) {
   return data;
 }
 
-function el(tag, cls, text) {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (text !== undefined) e.textContent = text;
-  return e;
+let toastTimer;
+function toast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, 2800);
 }
+function showError(msg) { $('error').textContent = msg; $('error').hidden = false; }
 
 async function load() {
   const list = $('list');
@@ -27,32 +30,37 @@ async function load() {
   try {
     const tools = await api('GET', '/api/admin/tools');
     list.replaceChildren();
-    if (!tools.length) list.append(el('p', 'muted', 'Noch keine Tools angelegt.'));
+    if (!tools.length) {
+      list.append(el('div', 'table-empty', 'Noch keine Tools angelegt. Mit „Neues Tool“ geht es los.'));
+      return;
+    }
     for (const t of tools) {
-      const item = el('div', 'item');
-      item.append(el('span', 'icon', t.icon || '🔧'));
-      const info = el('div', 'info');
-      const title = el('div', 'title');
-      const link = el('a', '', t.name);
-      link.href = '/' + encodeURIComponent(t.slug) + '/';
-      title.append(link, el('span', 'chip', '/' + t.slug));
-      const meta = el('div', 'meta', 'Gruppe: ' + t.group + (t.description ? ' · ' + t.description : ''));
-      info.append(title, meta);
-      const btns = el('div', 'btns');
-      const edit = el('button', 'btn small', 'Bearbeiten');
+      const row = el('div', 'trow');
+
+      const cell = el('div', 'tcell-tool');
+      const info = el('div', 't');
+      const name = el('strong', '', t.name);
+      info.append(name, el('span', '', t.description || 'Keine Beschreibung'));
+      cell.append(tile(t), info);
+
+      const path = el('a', 'mono', '/' + t.slug + '/');
+      path.href = '/' + encodeURIComponent(t.slug) + '/';
+      const g = el('div', 'gcell');
+      g.append(el('span', 'pill', t.group));
+
+      const act = el('div', 'tactions');
+      const edit = el('button', 'btn sm', 'Bearbeiten');
       edit.type = 'button';
       edit.onclick = () => openDialog(t);
-      const del = el('button', 'btn small danger', 'Löschen');
+      const del = el('button', 'btn sm danger', 'Entfernen');
       del.type = 'button';
-      del.onclick = () => remove(t);
-      btns.append(edit, del);
-      item.append(info, btns);
-      list.append(item);
+      del.onclick = () => confirmRemove(t);
+      act.append(edit, del);
+
+      row.append(cell, path, g, act);
+      list.append(row);
     }
-  } catch (e) {
-    $('error').textContent = e.message;
-    $('error').hidden = false;
-  }
+  } catch (e) { showError(e.message); }
 }
 
 function openDialog(t) {
@@ -64,40 +72,47 @@ function openDialog(t) {
   $('f-desc').value = t ? t.description : '';
   $('f-icon').value = t ? t.icon : '';
   $('f-group').value = t ? t.group : '';
+  if (!t) delete $('f-group').dataset.touched;
   $('dlg-error').hidden = true;
   dlg.showModal();
+  (t ? $('f-name') : $('f-slug')).focus();
 }
 
-async function remove(t) {
-  if (!confirm(`„${t.name}“ aus der Liste entfernen?\nDie Dateien in sites/${t.slug}/ bleiben auf dem Server liegen, sind aber nicht mehr erreichbar.`)) return;
-  try { await api('DELETE', '/api/admin/tools/' + encodeURIComponent(t.slug)); load(); }
-  catch (e) { $('error').textContent = e.message; $('error').hidden = false; }
+function confirmRemove(t) {
+  $('del-text').textContent = `„${t.name}“ wird aus der Liste entfernt und ist danach für niemanden mehr erreichbar. Die Dateien in sites/${t.slug}/ bleiben auf dem Server erhalten.`;
+  dlgDel.returnValue = '';
+  dlgDel.onclose = async () => {
+    if (dlgDel.returnValue !== 'ok') return;
+    try { await api('DELETE', '/api/admin/tools/' + encodeURIComponent(t.slug)); toast('Tool entfernt'); load(); }
+    catch (e) { showError(e.message); }
+  };
+  dlgDel.showModal();
 }
 
-// Gruppenname beim Anlegen vorschlagen
+// Gruppenname beim Anlegen automatisch vorschlagen
 $('f-slug').addEventListener('input', () => {
   if (!editing && !$('f-group').dataset.touched) $('f-group').value = $('f-slug').value ? 'tool-' + $('f-slug').value : '';
 });
 $('f-group').addEventListener('input', () => { $('f-group').dataset.touched = '1'; });
 
-$('new').onclick = () => { delete $('f-group').dataset.touched; openDialog(null); };
+$('new').onclick = () => openDialog(null);
 $('cancel').onclick = () => dlg.close();
 
 form.addEventListener('submit', async ev => {
   ev.preventDefault();
-  const body = {
-    name: $('f-name').value, description: $('f-desc').value,
-    icon: $('f-icon').value, group: $('f-group').value,
-  };
+  const save = $('save');
+  save.disabled = true;
+  const body = { name: $('f-name').value, description: $('f-desc').value, icon: $('f-icon').value, group: $('f-group').value };
   try {
     if (editing) await api('PUT', '/api/admin/tools/' + encodeURIComponent(editing), body);
     else await api('POST', '/api/admin/tools', { slug: $('f-slug').value, ...body });
     dlg.close();
+    toast(editing ? 'Änderungen gespeichert' : 'Tool angelegt');
     load();
   } catch (e) {
     $('dlg-error').textContent = e.message;
     $('dlg-error').hidden = false;
-  }
+  } finally { save.disabled = false; }
 });
 
 load();

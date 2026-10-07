@@ -144,6 +144,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- Routing
     def handle_request(self, method):
+        if method == "GET" and urlsplit(self.path).path == "/healthz":
+            return self.send_json(200, {"ok": True})
         username, groups = self.user()
         if not username:
             return self.send_json(401, {"error": "nicht angemeldet"})

@@ -3,23 +3,39 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>Tools</title>
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/assets/style.css">
+<script src="/assets/common.js" defer></script>
 <script src="/assets/portal.js" defer></script>
 </head>
 <body>
-<header class="bar">
-  <div class="bar-inner">
-    <span class="brand">🧰 Tools</span>
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="logo" href="/">
+      <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2" class="dim"/><rect x="3" y="13" width="8" height="8" rx="2" class="dim"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg>
+      <span>Tools</span>
+    </a>
     <span class="spacer"></span>
-    <span id="who" class="muted"></span>
-    <a id="admin-link" class="btn" href="/admin/" hidden>Verwalten</a>
+    <a id="admin-link" class="btn ghost" href="/admin/" hidden>
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm7.4-2.5a7.6 7.6 0 0 0 0-1l2-1.6-2-3.4-2.4 1a7.5 7.5 0 0 0-1.7-1L15 3.4h-4L10.7 6a7.5 7.5 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 1l-2 1.6 2 3.4 2.4-1a7.5 7.5 0 0 0 1.7 1l.3 2.6h4l.3-2.6a7.5 7.5 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6Z"/></svg>
+      Verwalten
+    </a>
+    <div class="user" id="user" hidden><span class="avatar" id="avatar"></span><span id="who"></span></div>
   </div>
 </header>
-<main>
-  <h1>Deine Tools</h1>
-  <p id="status" class="muted">Lade …</p>
+<main class="wrap">
+  <section class="hero">
+    <h1 id="hello">Willkommen</h1>
+    <p id="sub" class="muted"></p>
+  </section>
+  <div class="search" id="search-box" hidden>
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="m21 21-4.3-4.3M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z"/></svg>
+    <input id="search" type="search" placeholder="Tools durchsuchen …" aria-label="Tools durchsuchen" autocomplete="off">
+  </div>
   <div id="grid" class="grid"></div>
+  <div id="empty" class="empty" hidden></div>
 </main>
 </body>
 </html>

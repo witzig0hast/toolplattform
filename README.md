@@ -15,7 +15,7 @@ Browser ──► Nginx Proxy Manager ──(fragt)──► Authentik: "ist der
 ```
 cp .env.example .env     # NPM_NETWORK, TOOLS_UID/TOOLS_GID anpassen (Hinweise stehen in der Datei)
 mkdir -p data
-docker compose up -d --build
+docker compose up -d --build   # baut beide Images und startet sie
 ```
 
 ### 2. Authentik: Anwendung für die Subdomain
@@ -35,6 +35,14 @@ docker compose up -d --build
    - Tab **SSL**: neues Let's-Encrypt-Zertifikat, *Force SSL*, *HTTP/2*, *HSTS* an
 2. Tab **Advanced**: Inhalt von `npm/advanced.conf` einfügen (vorher `AUTHENTIK_IP` ersetzen).
 3. Tab **Custom locations** → *Add location*: `/`, http, `tools-web`, `8080` → Zahnrad ⚙ → Inhalt von `npm/location-root.conf` einfügen. Speichern.
+
+### Docker-Aufbau
+| Container | Image | Aufgabe | Erreichbar |
+|---|---|---|---|
+| `tools-web` | `toolplattform-web` (nginx, Portal eingebaut) | liefert Portal und Tools aus, fragt `tools-api` nach den Rechten | nur über den NPM |
+| `tools-api` | `toolplattform-api` (Python) | Tool-Liste, Rechte, Admin-API | nur intern, kein Internet |
+
+Beide haben Healthchecks (`docker compose ps` zeigt `healthy`). Von außen eingehängt sind nur `./sites` (deine Tool-Dateien) und `./data` (die Tool-Liste). Nach Änderungen am Portal/nginx: `docker compose up -d --build`. Backup: `./sites` und `./data` sichern.
 
 ## Benutzung
 - `https://tools.example.de/` – **Portal**: Kacheln mit allen Tools, die du nutzen darfst.

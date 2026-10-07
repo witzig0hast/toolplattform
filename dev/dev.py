@@ -44,7 +44,7 @@ class Dev(server.Handler):
     def handle_request(self, method):
         path = self.path.split("?")[0]
         _, groups = self.user()
-        if path.startswith("/api/") or path.startswith("/authz"):
+        if path.startswith("/api/") or path.startswith("/authz") or path == "/healthz":
             return super().handle_request(method)
         if path == "/":
             return self.serve(ROOT / "portal", "index.html")

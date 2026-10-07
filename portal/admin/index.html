@@ -3,53 +3,85 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tools verwalten</title>
+<meta name="color-scheme" content="light dark">
+<title>Verwalten</title>
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/assets/style.css">
+<script src="/assets/common.js" defer></script>
 <script src="/assets/admin.js" defer></script>
 </head>
 <body>
-<header class="bar">
-  <div class="bar-inner">
-    <a class="brand" href="/">🧰 Tools</a>
-    <span class="muted">/ Verwalten</span>
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="logo" href="/">
+      <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2" class="dim"/><rect x="3" y="13" width="8" height="8" rx="2" class="dim"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg>
+      <span>Tools</span>
+    </a>
+    <nav class="crumbs"><span class="sep">/</span><span>Verwalten</span></nav>
     <span class="spacer"></span>
-    <button id="new" class="btn primary" type="button">+ Neues Tool</button>
+    <a class="btn ghost" href="/">Zum Portal</a>
   </div>
 </header>
-<main>
-  <h1>Tools verwalten</h1>
-  <p class="muted">Jedes Tool gehört zu einer Authentik-Gruppe. Nur Mitglieder dieser Gruppe (und Admins) sehen und öffnen es. Die Dateien eines Tools legst du im Ordner <code>sites/&lt;slug&gt;/</code> auf dem Server ab.</p>
-  <p id="error" class="error" hidden></p>
-  <div id="list" class="list"></div>
+<main class="wrap">
+  <section class="hero row-between">
+    <div>
+      <h1>Tools verwalten</h1>
+      <p class="muted">Jedes Tool ist einer Authentik-Gruppe zugeordnet. Nur Mitglieder dieser Gruppe sowie Admins können es sehen und öffnen.</p>
+    </div>
+    <button id="new" class="btn primary" type="button">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      Neues Tool
+    </button>
+  </section>
+  <p id="error" class="alert" role="alert" hidden></p>
+  <div class="panel">
+    <div class="table-head"><span>Tool</span><span>Pfad</span><span>Gruppe</span><span></span></div>
+    <div id="list"></div>
+  </div>
+  <p class="hint">Dateien eines Tools legst du auf dem Server im Ordner <code>sites/&lt;pfad&gt;/</code> ab.</p>
 </main>
 
 <dialog id="dlg">
-  <form id="form" method="dialog">
-    <h2 id="dlg-title">Neues Tool</h2>
-    <label>Slug (Teil der URL)
-      <input id="f-slug" required pattern="[a-z0-9][a-z0-9\-]{0,40}" placeholder="home-assistant-fix" autocomplete="off">
-      <small>Nur a–z, 0–9 und „-“. Später nicht änderbar.</small>
-    </label>
-    <label>Name
-      <input id="f-name" required maxlength="60" placeholder="Home Assistant Fix" autocomplete="off">
-    </label>
-    <label>Beschreibung
-      <input id="f-desc" maxlength="200" placeholder="Kurz erklären, wofür das Tool ist" autocomplete="off">
-    </label>
-    <div class="row">
-      <label class="narrow">Symbol
-        <input id="f-icon" maxlength="8" placeholder="🔧" autocomplete="off">
+  <form id="form" method="dialog" autocomplete="off">
+    <header class="dlg-head"><h2 id="dlg-title">Neues Tool</h2></header>
+    <div class="dlg-body">
+      <label>Pfad (Teil der URL)
+        <div class="prefix"><span>/</span><input id="f-slug" required pattern="[a-z0-9][a-z0-9\-]{0,40}" placeholder="home-assistant-fix"></div>
+        <small>Nur a–z, 0–9 und „-“. Kann später nicht geändert werden.</small>
       </label>
-      <label>Authentik-Gruppe
-        <input id="f-group" required maxlength="64" placeholder="tool-home-assistant-fix" autocomplete="off">
+      <label>Name
+        <input id="f-name" required maxlength="60" placeholder="Home Assistant Fix">
       </label>
+      <label>Beschreibung
+        <input id="f-desc" maxlength="200" placeholder="Wofür ist das Tool?">
+      </label>
+      <div class="two">
+        <label class="narrow">Symbol <span class="opt">optional</span>
+          <input id="f-icon" maxlength="8" placeholder="🏠">
+        </label>
+        <label>Authentik-Gruppe
+          <input id="f-group" required maxlength="64" placeholder="tool-home-assistant-fix">
+        </label>
+      </div>
+      <p id="dlg-error" class="alert" role="alert" hidden></p>
     </div>
-    <p id="dlg-error" class="error" hidden></p>
-    <div class="actions">
+    <footer class="dlg-foot">
       <button class="btn" type="button" id="cancel">Abbrechen</button>
-      <button class="btn primary" type="submit">Speichern</button>
-    </div>
+      <button class="btn primary" type="submit" id="save">Speichern</button>
+    </footer>
   </form>
 </dialog>
+
+<dialog id="dlg-del">
+  <form method="dialog">
+    <header class="dlg-head"><h2>Tool entfernen?</h2></header>
+    <div class="dlg-body"><p id="del-text"></p></div>
+    <footer class="dlg-foot">
+      <button class="btn" value="cancel">Abbrechen</button>
+      <button class="btn danger-solid" value="ok" id="del-ok">Entfernen</button>
+    </footer>
+  </form>
+</dialog>
+<div id="toast" class="toast" role="status" hidden></div>
 </body>
 </html>

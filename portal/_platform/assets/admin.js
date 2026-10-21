@@ -194,6 +194,35 @@ async function loadShares() {
   } catch (e) { $('share-error').textContent = e.message; $('share-error').hidden = false; }
 }
 
+// Gewählte Gültigkeit als Sekunden-Dauer oder Ablaufzeitpunkt ermitteln (null = unvollständig)
+function shareExpiry() {
+  const mode = $('s-dur').value;
+  if (mode === 'until') {
+    const v = $('s-date').value;
+    if (!v) return null;
+    return { expires_at: new Date(v).getTime() / 1000 };
+  }
+  if (mode === 'custom') {
+    const n = parseInt($('s-num').value, 10);
+    if (!n || n < 1) return null;
+    return { expires_in: n * parseInt($('s-unit').value, 10) };
+  }
+  return { expires_in: parseInt(mode, 10) };
+}
+
+function syncShareDuration() {
+  const mode = $('s-dur').value;
+  $('s-custom').hidden = mode !== 'custom';
+  $('s-until').hidden = mode !== 'until';
+  const e = shareExpiry();
+  const secs = e ? (e.expires_at ? e.expires_at : Date.now() / 1000 + e.expires_in) : null;
+  $('s-preview').textContent = secs ? 'Läuft ab am ' + when(secs) + '.' : '';
+}
+for (const id of ['s-dur', 's-num', 's-unit', 's-date']) {
+  $(id).addEventListener('input', syncShareDuration);
+  $(id).addEventListener('change', syncShareDuration);
+}
+
 function openShare(slug) {
   const sel = $('s-tool');
   sel.replaceChildren();
@@ -205,7 +234,11 @@ function openShare(slug) {
   if (!toolsCache.length) { showError('Lege zuerst ein Tool an.'); return; }
   if (slug) sel.value = slug;
   $('s-label').value = '';
+  $('s-dur').value = '86400';
+  const soon = new Date(Date.now() + 86400000 - new Date().getTimezoneOffset() * 60000);
+  $('s-date').value = soon.toISOString().slice(0, 16);
   $('share-dlg-error').hidden = true;
+  syncShareDuration();
   $('dlg-share').showModal();
 }
 
@@ -215,10 +248,16 @@ $('share-cancel').onclick = () => $('dlg-share').close();
 $('form-share').addEventListener('submit', async ev => {
   ev.preventDefault();
   const btn = $('share-save');
+  const expiry = shareExpiry();
+  if (!expiry) {
+    $('share-dlg-error').textContent = 'Bitte eine gültige Dauer oder ein Datum angeben.';
+    $('share-dlg-error').hidden = false;
+    return;
+  }
   btn.disabled = true;
   try {
     const res = await api('POST', '/_platform/api/admin/shares', {
-      tool: $('s-tool').value, label: $('s-label').value, expires_in: parseInt($('s-dur').value, 10),
+      tool: $('s-tool').value, label: $('s-label').value, ...expiry,
     });
     $('dlg-share').close();
     $('link-url').value = location.origin + res.path;

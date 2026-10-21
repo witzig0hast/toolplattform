@@ -127,9 +127,29 @@
           <option value="86400" selected>24 Stunden</option>
           <option value="604800">7 Tage</option>
           <option value="2592000">30 Tage</option>
-          <option value="7776000">90 Tage</option>
+          <option value="custom">Eigene Dauer …</option>
+          <option value="until">Bis zu einem Datum …</option>
         </select>
       </label>
+      <div id="s-custom" class="two" hidden>
+        <label class="narrow">Dauer
+          <input id="s-num" type="number" min="1" step="1" value="2">
+        </label>
+        <label>Einheit
+          <select id="s-unit">
+            <option value="60">Minuten</option>
+            <option value="3600" selected>Stunden</option>
+            <option value="86400">Tage</option>
+          </select>
+        </label>
+      </div>
+      <div id="s-until" hidden>
+        <label>Läuft ab am
+          <input id="s-date" type="datetime-local">
+          <small>Deine Ortszeit. Maximal 365 Tage ab jetzt.</small>
+        </label>
+      </div>
+      <p class="muted" id="s-preview"></p>
       <p id="share-dlg-error" class="alert" role="alert" hidden></p>
     </div>
     <footer class="dlg-foot">

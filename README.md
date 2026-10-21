@@ -78,18 +78,21 @@ Als Ziel-Adresse trägst du dann `http://mein-tool:<port>` ein (Container-Name a
 - Nicht erlaubte Ziele: `localhost`/Loopback, Link-Local (`169.254.x.x`) sowie `tools-web`/`tools-api`.
 
 ### Öffentliche Freigabe-Links
-Als Admin kannst du ein Tool ohne Login teilen: in `/_platform/admin/` bei einem Tool auf **Teilen** (oder unten **+ Freigabe-Link**), Gültigkeit wählen (1 Stunde bis 90 Tage), Link kopieren. Der Link sieht so aus: `https://tools.example.de/s/<langer-zufälliger-Token>/`.
+Als Admin kannst du ein Tool ohne Login teilen: in `/_platform/admin/` bei einem Tool auf **Teilen** (oder unten **+ Freigabe-Link**). Die Gültigkeit stellst du genau ein:
+- Vorgaben: 1 Stunde, 24 Stunden, 7 Tage, 30 Tage
+- **Eigene Dauer**: beliebige Zahl in Minuten, Stunden oder Tagen
+- **Bis zu einem Datum**: genauer Ablaufzeitpunkt (deine Ortszeit)
 
-- **Zeitbegrenzung:** Die Plattform prüft bei jedem Aufruf, ob der Link noch gültig ist (Authentik selbst kennt keine ablaufenden Links). Abgelaufene Links zeigen eine Fehlerseite. Du kannst jeden Link jederzeit **widerrufen**.
-- **Der Link wird nur einmal angezeigt.** Gespeichert wird nur ein Hash, nicht der Link selbst (`data/shares.json`). Wer die Admin-Daten liest, kann daraus keine funktionierenden Links bauen.
+Minimum 1 Minute, Maximum 365 Tage. Der Link sieht so aus: `https://tools.example.de/s/<langer-zufälliger-Token>/`.
+
+- **Zeitbegrenzung:** Die Plattform prüft bei jedem Aufruf, ob der Link noch gültig ist. Abgelaufene Links zeigen eine Fehlerseite. Du kannst jeden Link jederzeit **widerrufen**.
+- **Der Link wird nur einmal angezeigt.** Gespeichert wird nur ein Hash, nicht der Link selbst (`data/shares.json`).
 - Wer den Link kennt, braucht **kein Authentik-Konto** und kann das Tool nutzen. Das Tool sieht dabei keinen Benutzer (keine `X-Authentik-*`-Header).
 - Teile nur Tools, die für fremde Personen unbedenklich sind. Tools mit Schreib- oder Löschfunktion sind per Link für jeden benutzbar, der ihn hat.
 
-**Einmalig in Authentik einrichten** (sonst führt der Link auf die Anmeldeseite): Applications → Providers → `tools` → Edit → *Advanced protocol settings* → **Unauthenticated URLs** → eine Zeile eintragen:
-```
-^/s/.*
-```
-Speichern. Mehr ist nicht nötig, im NPM ändert sich nichts. Alles außerhalb von `/s/` bleibt hinter dem Login.
+**Einmalig im NPM einrichten** (sonst führt der Link auf die Anmeldeseite): Proxy Host → Tab **Custom locations** → *Add location*: `/s/`, http, `tools-web`, `8080` → Zahnrad ⚙ → Inhalt von `npm/location-share.conf` einfügen (`DEIN_TOOLS_SECRET` durch den Wert aus der `.env` ersetzen). Diese Location hat **absichtlich kein Authentik-Login**; die Plattform prüft selbst, ob der Link gültig ist. Alles außerhalb von `/s/` bleibt hinter dem Login.
+
+*Alternative über Authentik (ungetestet):* Provider `tools` → *Unauthenticated URLs*. Wie Authentik die Regel im Forward-Auth-Modus abgleicht (nur Pfad oder volle URL), konnte nicht geprüft werden; eine Regel, die beides abdeckt, wäre `^(https?://[^/]+)?/s/.*`. Der NPM-Weg oben ist verlässlicher.
 
 **Was über Freigabe-Links funktioniert:** Dateien-Tools und Weiterleitungs-Tools, die mit relativen Pfaden arbeiten (oder unter einem Unterpfad laufen, „Pfad-Präfix entfernen“ aus). Apps, die ihre Daten unter absoluten Pfaden wie `/api/...` abrufen (z. B. der Stromrechner), funktionieren über einen Freigabe-Link **nicht**, weil diese Anfragen nicht unter `/s/<token>/` laufen und deshalb zum Login führen. Für solche Apps bräuchte es eine eigene öffentliche Subdomain.
 

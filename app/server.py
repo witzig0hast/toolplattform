@@ -35,7 +35,7 @@ NO_REDIRECT = ("/_none_/", "/_none_/")  # Platzhalter: nginx proxy_redirect ohne
 # Öffentliche Freigabe-Links (/s/<token>/...)
 SHARES_FILE = DATA_FILE.parent / "shares.json"
 SHARE_MIN_SECONDS = 60
-SHARE_MAX_SECONDS = 90 * 24 * 3600
+SHARE_MAX_SECONDS = 365 * 24 * 3600
 SHARE_MAX_ACTIVE = 200
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
@@ -430,22 +430,32 @@ class Handler(BaseHTTPRequestHandler):
                 if tool_slug not in tools:
                     raise ValueError("Tool nicht gefunden")
                 label = clean_text(body.get("label", ""), "Bezeichnung", 60)
-                seconds = body.get("expires_in")
-                if not isinstance(seconds, int) or isinstance(seconds, bool) or not SHARE_MIN_SECONDS <= seconds <= SHARE_MAX_SECONDS:
-                    raise ValueError("Gültigkeit muss zwischen 1 Minute und 90 Tagen liegen")
-                token = secrets.token_urlsafe(32)
                 now = time.time()
+                # Entweder Dauer in Sekunden (expires_in) oder genauer Ablaufzeitpunkt (expires_at, Unix-Sekunden)
+                if "expires_at" in body:
+                    at = body["expires_at"]
+                    if not isinstance(at, (int, float)) or isinstance(at, bool):
+                        raise ValueError("Ungültiger Ablaufzeitpunkt")
+                    seconds = int(at - now)
+                    expires = float(at)
+                else:
+                    seconds = body.get("expires_in")
+                    expires = None
+                if not isinstance(seconds, int) or isinstance(seconds, bool) or not SHARE_MIN_SECONDS <= seconds <= SHARE_MAX_SECONDS:
+                    raise ValueError("Gültigkeit muss zwischen 1 Minute und 365 Tagen liegen")
+                token = secrets.token_urlsafe(32)
+                expires = expires if expires is not None else now + seconds
                 with _lock:
                     shares = {h: sh for h, sh in load_shares().items() if sh["expires"] > now - 7 * 86400}
                     if sum(1 for sh in shares.values() if sh["expires"] > now) >= SHARE_MAX_ACTIVE:
                         raise ValueError("Zu viele aktive Freigabe-Links")
                     shares[hash_token(token)] = {
-                        "tool": tool_slug, "label": label, "created": now, "expires": now + seconds,
+                        "tool": tool_slug, "label": label, "created": now, "expires": expires,
                         "created_by": self.headers.get("X-Authentik-Username", ""),
                     }
                     save_shares(shares)
                 # Der Token wird nur hier einmal ausgegeben; gespeichert ist nur sein Hash
-                return self.send_json(201, {"id": hash_token(token)[:12], "path": f"/s/{token}/", "expires": now + seconds})
+                return self.send_json(201, {"id": hash_token(token)[:12], "path": f"/s/{token}/", "expires": expires})
             if method == "DELETE" and share_id:
                 self.read_body_check_origin()
                 with _lock:

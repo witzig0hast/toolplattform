@@ -39,6 +39,22 @@
     <div id="list"></div>
   </div>
   <p class="hint">Dateien eines Tools legst du auf dem Server im Ordner <code>sites/&lt;pfad&gt;/</code> ab.</p>
+
+  <section class="hero row-between section-gap">
+    <div>
+      <h2>Freigabe-Links</h2>
+      <p class="muted">Öffentliche Links ohne Login, zeitlich begrenzt und jederzeit widerrufbar. Wer den Link hat, kann das Tool nutzen.</p>
+    </div>
+    <button id="new-share" class="btn primary" type="button">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      Freigabe-Link
+    </button>
+  </section>
+  <p id="share-error" class="alert" role="alert" hidden></p>
+  <div class="panel">
+    <div class="table-head shares"><span>Tool</span><span>Bezeichnung</span><span>Läuft ab</span><span></span></div>
+    <div id="share-list"></div>
+  </div>
 </main>
 
 <dialog id="dlg">
@@ -86,12 +102,55 @@
 
 <dialog id="dlg-del">
   <form method="dialog">
-    <header class="dlg-head"><h2>Tool entfernen?</h2></header>
+    <header class="dlg-head"><h2 id="del-title">Tool entfernen?</h2></header>
     <div class="dlg-body"><p id="del-text"></p></div>
     <footer class="dlg-foot">
       <button class="btn" value="cancel">Abbrechen</button>
       <button class="btn danger-solid" value="ok" id="del-ok">Entfernen</button>
     </footer>
+  </form>
+</dialog>
+<dialog id="dlg-share">
+  <form id="form-share" method="dialog" autocomplete="off">
+    <header class="dlg-head"><h2>Freigabe-Link erstellen</h2></header>
+    <div class="dlg-body">
+      <label>Tool
+        <select id="s-tool" required></select>
+      </label>
+      <label>Bezeichnung <span class="opt">optional</span>
+        <input id="s-label" maxlength="60" placeholder="z. B. Für Familie Müller">
+        <small>Nur für dich zur Übersicht.</small>
+      </label>
+      <label>Gültig für
+        <select id="s-dur">
+          <option value="3600">1 Stunde</option>
+          <option value="86400" selected>24 Stunden</option>
+          <option value="604800">7 Tage</option>
+          <option value="2592000">30 Tage</option>
+          <option value="7776000">90 Tage</option>
+        </select>
+      </label>
+      <p id="share-dlg-error" class="alert" role="alert" hidden></p>
+    </div>
+    <footer class="dlg-foot">
+      <button class="btn" type="button" id="share-cancel">Abbrechen</button>
+      <button class="btn primary" type="submit" id="share-save">Link erstellen</button>
+    </footer>
+  </form>
+</dialog>
+
+<dialog id="dlg-link">
+  <form method="dialog">
+    <header class="dlg-head"><h2>Link erstellt</h2></header>
+    <div class="dlg-body">
+      <p>Kopiere den Link jetzt. <strong>Aus Sicherheitsgründen wird er nur einmal angezeigt.</strong> Danach kannst du ihn nur noch widerrufen.</p>
+      <div class="copyrow">
+        <input id="link-url" readonly aria-label="Freigabe-Link">
+        <button class="btn primary" type="button" id="link-copy">Kopieren</button>
+      </div>
+      <p class="muted" id="link-expiry"></p>
+    </div>
+    <footer class="dlg-foot"><button class="btn">Fertig</button></footer>
   </form>
 </dialog>
 <div id="toast" class="toast" role="status" hidden></div>

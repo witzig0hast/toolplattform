@@ -77,6 +77,22 @@ Als Ziel-Adresse trägst du dann `http://mein-tool:<port>` ein (Container-Name a
 - Der Dienst bekommt die Header `X-Authentik-Username`, `X-Authentik-Groups`, `X-Authentik-Email` und `X-Authentik-Name`, kann sich also darauf für Single Sign-on stützen.
 - Nicht erlaubte Ziele: `localhost`/Loopback, Link-Local (`169.254.x.x`) sowie `tools-web`/`tools-api`.
 
+### Öffentliche Freigabe-Links
+Als Admin kannst du ein Tool ohne Login teilen: in `/_platform/admin/` bei einem Tool auf **Teilen** (oder unten **+ Freigabe-Link**), Gültigkeit wählen (1 Stunde bis 90 Tage), Link kopieren. Der Link sieht so aus: `https://tools.example.de/s/<langer-zufälliger-Token>/`.
+
+- **Zeitbegrenzung:** Die Plattform prüft bei jedem Aufruf, ob der Link noch gültig ist (Authentik selbst kennt keine ablaufenden Links). Abgelaufene Links zeigen eine Fehlerseite. Du kannst jeden Link jederzeit **widerrufen**.
+- **Der Link wird nur einmal angezeigt.** Gespeichert wird nur ein Hash, nicht der Link selbst (`data/shares.json`). Wer die Admin-Daten liest, kann daraus keine funktionierenden Links bauen.
+- Wer den Link kennt, braucht **kein Authentik-Konto** und kann das Tool nutzen. Das Tool sieht dabei keinen Benutzer (keine `X-Authentik-*`-Header).
+- Teile nur Tools, die für fremde Personen unbedenklich sind. Tools mit Schreib- oder Löschfunktion sind per Link für jeden benutzbar, der ihn hat.
+
+**Einmalig in Authentik einrichten** (sonst führt der Link auf die Anmeldeseite): Applications → Providers → `tools` → Edit → *Advanced protocol settings* → **Unauthenticated URLs** → eine Zeile eintragen:
+```
+^/s/.*
+```
+Speichern. Mehr ist nicht nötig, im NPM ändert sich nichts. Alles außerhalb von `/s/` bleibt hinter dem Login.
+
+**Was über Freigabe-Links funktioniert:** Dateien-Tools und Weiterleitungs-Tools, die mit relativen Pfaden arbeiten (oder unter einem Unterpfad laufen, „Pfad-Präfix entfernen“ aus). Apps, die ihre Daten unter absoluten Pfaden wie `/api/...` abrufen (z. B. der Stromrechner), funktionieren über einen Freigabe-Link **nicht**, weil diese Anfragen nicht unter `/s/<token>/` laufen und deshalb zum Login führen. Für solche Apps bräuchte es eine eigene öffentliche Subdomain.
+
 ### Update einer bestehenden Installation
 Die Plattform liegt jetzt komplett unter `/_platform/` (Portal-Startseite bleibt `/`), damit Tools Pfade wie `/api` oder `/assets` selbst nutzen können. Die Admin-Seite erreichst du daher unter `/_platform/admin/`.
 ```
@@ -98,6 +114,7 @@ Im NPM bei der Custom location `/` (Zahnrad) die Zeile `proxy_set_header X-Tools
 - Admins (`ADMIN_GROUP`) sehen alle Tools. „Löschen“ entfernt ein Tool nur aus der Liste, Dateien in `sites/` bleiben liegen.
 - Tool-Seiten dürfen Inline-Skripte nutzen (CSP lockerer als bei Portal/Admin), bleiben aber auf die eigene Domain beschränkt.
 - Der NPM überschreibt die Identitäts-Header, Clients können sie nicht fälschen. Zusätzlich verlangt das Backend ein gemeinsames Geheimnis (`TOOLS_SECRET`), das nur der NPM kennt - so kann auch ein Container im selben Docker-Netz keine Login-Header vortäuschen. Das Geheimnis wird nie an Tools weitergegeben.
+- Freigabe-Links: 256-Bit-Zufalls-Token, nur als Hash gespeichert, zeitlich begrenzt, widerrufbar, nicht indexierbar (`X-Robots-Tag`), ohne Referer an Dritte (`Referrer-Policy: same-origin`). Ohne Login ist ausschließlich `/s/<gültiger Token>/` erreichbar; alles andere antwortet weiterhin mit 401.
 - Tool-Container im Netz `toolplattform_tools` können sich gegenseitig erreichen; hänge nur Dienste hinein, denen du vertraust.
 - Wichtig: `tools-web` nicht in weitere Docker-Netze hängen, in denen andere Container sind, denen du nicht traust (sie könnten Header selbst setzen).
 - Eine eigene Authentik-Application pro Slash geht bei Forward-Auth nicht (Authentik ordnet nach Host, nicht Pfad). Darum: eine Application + eine Gruppe pro Tool.

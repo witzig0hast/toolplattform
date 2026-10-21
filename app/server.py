@@ -7,14 +7,17 @@
 Vertraut den Headern X-Authentik-Username / X-Authentik-Groups. Darf deshalb nur
 über den tools-web-Container erreichbar sein (siehe docker-compose.yml).
 """
+import hashlib
 import hmac
 import html
 import ipaddress
 import json
 import os
 import re
+import secrets
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -27,6 +30,13 @@ TOOLS_SECRET = os.environ.get("TOOLS_SECRET", "")
 # Interner nginx-Server (nur im Container erreichbar), der die statischen Tool-Dateien ausliefert
 STATIC_UPSTREAM = "http://127.0.0.1:8081"
 COOKIE_NAME = "tools_last"
+NO_REDIRECT = ("/_none_/", "/_none_/")  # Platzhalter: nginx proxy_redirect ohne Wirkung
+
+# Öffentliche Freigabe-Links (/s/<token>/...)
+SHARES_FILE = DATA_FILE.parent / "shares.json"
+SHARE_MIN_SECONDS = 60
+SHARE_MAX_SECONDS = 90 * 24 * 3600
+SHARE_MAX_ACTIVE = 200
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
 RESERVED_SLUGS = {"api", "admin", "assets"}
@@ -43,13 +53,44 @@ def load_tools():
         return {}
 
 
-def save_tools(tools):
-    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=DATA_FILE.parent, prefix=".tools-", suffix=".tmp")
+def _save_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".json")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(tools, f, ensure_ascii=False, indent=2, sort_keys=True)
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, DATA_FILE)
+        json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
+    os.chmod(tmp, 0o600 if path == SHARES_FILE else 0o644)
+    os.replace(tmp, path)
+
+
+def save_tools(tools):
+    _save_json(DATA_FILE, tools)
+
+
+def load_shares():
+    try:
+        data = json.loads(SHARES_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+
+
+def save_shares(shares):
+    _save_json(SHARES_FILE, shares)
+
+
+def hash_token(token):
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def find_share(token, tools):
+    """Gültigen (nicht abgelaufenen) Share zum Token samt Tool liefern, sonst (None, None)."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{20,100}", token):
+        return None, None
+    share = load_shares().get(hash_token(token))
+    if not share or share["expires"] <= time.time():
+        return None, None
+    tool = tools.get(share["tool"])
+    return (share, tool) if tool else (None, None)
 
 
 def clean_text(value, field, max_len, required=False):
@@ -133,10 +174,10 @@ def resolve_request(raw_uri, groups, referer="", host="", cookie_header=""):
     """Entscheidet über einen Zugriff und liefert das Ziel für nginx.
 
     raw_uri ist $request_uri von nginx (Pfad + Query, so wie der Client ihn geschickt hat).
-    Rückgabe: None (verboten) oder dict(target, prefix, cookie)
-      target  vollständige Ziel-URL (interner Datei-Server oder Weiterleitungs-Adresse)
-      prefix  "/slug", wenn Weiterleitungs-Antworten (Location) mit diesem Präfix versehen werden sollen
-      cookie  Set-Cookie-Wert (merkt sich das zuletzt genutzte Tool) oder ""
+    Rückgabe: None (verboten) oder dict(target, redir_from, redir_to, cookie)
+      target      vollständige Ziel-URL (interner Datei-Server oder Weiterleitungs-Adresse)
+      redir_from/to  Location-Header des Ziels, die mit redir_from beginnen, werden auf redir_to umgeschrieben
+      cookie      Set-Cookie-Wert (merkt sich das zuletzt genutzte Tool) oder ""
     """
     if not raw_uri.startswith("/") or "#" in raw_uri:
         return None
@@ -154,8 +195,29 @@ def resolve_request(raw_uri, groups, referer="", host="", cookie_header=""):
     suffix = ("?" + query) if query else ""
     tools = load_tools()
     slug = segments[1] if len(segments) > 1 else ""
-    tool = tools.get(slug)
 
+    # --- Öffentlicher Freigabe-Link: /s/<token>/...  (kein Login, zeitlich begrenzt)
+    if slug == "s":
+        token = segments[2] if len(segments) > 2 else ""
+        share, tool = find_share(token, tools)
+        if not share:
+            return None
+        prefix = "/s/" + token
+        if not raw_path.startswith(prefix) or (len(raw_path) > len(prefix) and raw_path[len(prefix)] != "/"):
+            return None
+        if raw_path == prefix:
+            return {"target": STATIC_UPSTREAM + "/_redirect?to=" + prefix + "/", "redir": NO_REDIRECT, "cookie": ""}
+        rest = raw_path[len(prefix):]
+        tool_slug = share["tool"]
+        if tool.get("type", "static") == "proxy":
+            if tool.get("strip_prefix", True):
+                return {"target": tool["upstream"] + rest + suffix, "redir": ("/", prefix + "/"), "cookie": ""}
+            return {"target": tool["upstream"] + "/" + tool_slug + rest + suffix,
+                    "redir": ("/" + tool_slug + "/", prefix + "/"), "cookie": ""}
+        return {"target": STATIC_UPSTREAM + "/" + tool_slug + rest + suffix,
+                "redir": ("/" + tool_slug + "/", prefix + "/"), "cookie": ""}
+
+    tool = tools.get(slug)
     if tool:
         if not can_see(tool, groups):
             return None
@@ -164,7 +226,7 @@ def resolve_request(raw_uri, groups, referer="", host="", cookie_header=""):
         if not raw_path.startswith(prefix) or (len(raw_path) > len(prefix) and raw_path[len(prefix)] != "/"):
             return None
         if raw_path == prefix:  # /name -> /name/ (relative Links brauchen den Schrägstrich)
-            return {"target": STATIC_UPSTREAM + "/_redirect?to=" + prefix + "/", "prefix": "", "cookie": ""}
+            return {"target": STATIC_UPSTREAM + "/_redirect?to=" + prefix + "/", "redir": NO_REDIRECT, "cookie": ""}
         if tool.get("type", "static") == "proxy":
             strip = tool.get("strip_prefix", True)
             rest = raw_path[len(prefix):] if strip else raw_path
@@ -172,8 +234,8 @@ def resolve_request(raw_uri, groups, referer="", host="", cookie_header=""):
             if strip and parse_cookie(cookie_header, COOKIE_NAME) != slug:
                 cookie = f"{COOKIE_NAME}={slug}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Lax"
             return {"target": tool["upstream"] + (rest or "/") + suffix,
-                    "prefix": prefix if strip else "", "cookie": cookie}
-        return {"target": STATIC_UPSTREAM + raw_path + suffix, "prefix": "", "cookie": ""}
+                    "redir": ("/", prefix + "/") if strip else NO_REDIRECT, "cookie": cookie}
+        return {"target": STATIC_UPSTREAM + raw_path + suffix, "redir": NO_REDIRECT, "cookie": ""}
 
     # Unbekannter erster Pfadteil: Viele Apps rufen absolute Pfade wie /api/x oder /static/app.js auf.
     # Dann das zuletzt benutzte Tool nehmen - erst nach Referer, dann nach Merk-Cookie.
@@ -188,7 +250,7 @@ def resolve_request(raw_uri, groups, referer="", host="", cookie_header=""):
     for cand in candidates:
         t = tools.get(cand)
         if t and t.get("type") == "proxy" and t.get("strip_prefix", True) and can_see(t, groups):
-            return {"target": t["upstream"] + raw_path + suffix, "prefix": "/" + cand, "cookie": ""}
+            return {"target": t["upstream"] + raw_path + suffix, "redir": ("/", "/" + cand + "/"), "cookie": ""}
     return None
 
 
@@ -254,9 +316,11 @@ class Handler(BaseHTTPRequestHandler):
         username, groups = self.user()
         if not secret_ok(self.headers.get("X-Tools-Secret", "")):
             return self.send_json(403, {"error": "Anfrage nicht über den Proxy gekommen"})
-        if not username:
-            return self.send_json(401, {"error": "nicht angemeldet"})
         path = urlsplit(self.path).path
+        # Öffentliche Freigabe-Links (/s/...) brauchen keinen Login; alles andere schon
+        public_share = path == "/authz" and self.headers.get("X-Original-URI", "").startswith("/s/")
+        if not username and not public_share:
+            return self.send_json(401, {"error": "nicht angemeldet"})
 
         if method == "GET" and path == "/authz":
             res = resolve_request(
@@ -268,7 +332,8 @@ class Handler(BaseHTTPRequestHandler):
             if not res:
                 return self.send_json(403)
             return self.send_json(200, extra={
-                "X-Tool-Target": res["target"], "X-Tool-Prefix": res["prefix"], "X-Tool-Cookie": res["cookie"],
+                "X-Tool-Target": res["target"], "X-Tool-Redir-From": res["redir"][0],
+                "X-Tool-Redir-To": res["redir"][1], "X-Tool-Cookie": res["cookie"],
             })
         if method == "GET" and path == "/authz-admin":
             return self.send_json(200 if is_admin(groups) else 403)
@@ -295,6 +360,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def admin(self, method, path):
         parts = path.split("/")  # ['', 'api', 'admin', 'tools', <slug>]
+        if parts[:4] == ["", "api", "admin", "shares"] and len(parts) <= 5:
+            return self.admin_shares(method, parts[4] if len(parts) == 5 else None)
         if parts[:4] != ["", "api", "admin", "tools"] or len(parts) > 5:
             return self.send_json(404, {"error": "nicht gefunden"})
         slug = parts[4] if len(parts) == 5 else None
@@ -336,6 +403,58 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send_json(404, {"error": "Tool nicht gefunden"})
                     del tools[slug]  # Dateien in sites/<slug>/ bleiben liegen
                     save_tools(tools)
+                return self.send_json(200, {"ok": True})
+        except PermissionError as e:
+            return self.send_json(403, {"error": str(e)})
+        except (ValueError, json.JSONDecodeError) as e:
+            return self.send_json(400, {"error": str(e)})
+        self.send_json(405, {"error": "Methode nicht erlaubt"})
+
+    def admin_shares(self, method, share_id):
+        try:
+            if method == "GET" and share_id is None:
+                tools = load_tools()
+                now = time.time()
+                out = []
+                for h, sh in load_shares().items():
+                    out.append({
+                        "id": h[:12], "tool": sh["tool"], "toolName": tools.get(sh["tool"], {}).get("name", sh["tool"]),
+                        "label": sh.get("label", ""), "created": sh["created"], "expires": sh["expires"],
+                        "createdBy": sh.get("created_by", ""), "active": sh["expires"] > now and sh["tool"] in tools,
+                    })
+                return self.send_json(200, sorted(out, key=lambda x: -x["created"]))
+            if method == "POST" and share_id is None:
+                body = self.read_body()
+                tools = load_tools()
+                tool_slug = body.get("tool")
+                if tool_slug not in tools:
+                    raise ValueError("Tool nicht gefunden")
+                label = clean_text(body.get("label", ""), "Bezeichnung", 60)
+                seconds = body.get("expires_in")
+                if not isinstance(seconds, int) or isinstance(seconds, bool) or not SHARE_MIN_SECONDS <= seconds <= SHARE_MAX_SECONDS:
+                    raise ValueError("Gültigkeit muss zwischen 1 Minute und 90 Tagen liegen")
+                token = secrets.token_urlsafe(32)
+                now = time.time()
+                with _lock:
+                    shares = {h: sh for h, sh in load_shares().items() if sh["expires"] > now - 7 * 86400}
+                    if sum(1 for sh in shares.values() if sh["expires"] > now) >= SHARE_MAX_ACTIVE:
+                        raise ValueError("Zu viele aktive Freigabe-Links")
+                    shares[hash_token(token)] = {
+                        "tool": tool_slug, "label": label, "created": now, "expires": now + seconds,
+                        "created_by": self.headers.get("X-Authentik-Username", ""),
+                    }
+                    save_shares(shares)
+                # Der Token wird nur hier einmal ausgegeben; gespeichert ist nur sein Hash
+                return self.send_json(201, {"id": hash_token(token)[:12], "path": f"/s/{token}/", "expires": now + seconds})
+            if method == "DELETE" and share_id:
+                self.read_body_check_origin()
+                with _lock:
+                    shares = load_shares()
+                    match = [h for h in shares if h[:12] == share_id]
+                    if not match:
+                        return self.send_json(404, {"error": "Link nicht gefunden"})
+                    del shares[match[0]]
+                    save_shares(shares)
                 return self.send_json(200, {"ok": True})
         except PermissionError as e:
             return self.send_json(403, {"error": str(e)})

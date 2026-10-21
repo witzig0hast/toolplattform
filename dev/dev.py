@@ -46,6 +46,10 @@ class Dev(server.Handler):
     def handle_request(self, method):
         path = self.path.split("?")[0]
         _, groups = self.user()
+        if path.startswith("/s/"):  # öffentlicher Link: ohne Anmeldung, wie hinter dem Proxy
+            for k in ("X-Authentik-Username", "X-Authentik-Name", "X-Authentik-Groups"):
+                del self.headers[k]
+            groups = []
         if path.startswith("/_platform/api/"):
             self.path = self.path[len("/_platform"):]
             return super().handle_request(method)
@@ -71,7 +75,8 @@ class Dev(server.Handler):
             self.end_headers()
             return
         if target.startswith(server.STATIC_UPSTREAM):
-            return self.serve(ROOT / "sites", path[1:])
+            from urllib.parse import urlsplit
+            return self.serve(ROOT / "sites", urlsplit(target).path[1:])
         body = f"(Vorschau) Hier würde nach {target} weitergeleitet.".encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")

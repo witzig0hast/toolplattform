@@ -4,6 +4,7 @@ const dlg = $('dlg'), dlgDel = $('dlg-del'), form = $('form');
 let editing = null; // Pfad beim Bearbeiten, sonst null
 let toolsCache = [];
 let toolsDomain = '';
+let healthCache = {};
 
 async function api(method, url, body) {
   const res = await fetch(url, {
@@ -30,8 +31,12 @@ async function load() {
   const list = $('list');
   $('error').hidden = true;
   try {
-    const tools = await api('GET', '/_platform/api/admin/tools');
+    const [tools, health] = await Promise.all([
+      api('GET', '/_platform/api/admin/tools'),
+      api('GET', '/_platform/api/admin/health').catch(() => ({})),
+    ]);
     toolsCache = tools;
+    healthCache = health.tools || {};
     const cats = [...new Set(tools.map(t => t.category).filter(Boolean))].sort();
     $('cat-list').replaceChildren(...cats.map(c => { const o = el('option'); o.value = c; return o; }));
     list.replaceChildren();
@@ -45,8 +50,15 @@ async function load() {
       const cell = el('div', 'tcell-tool');
       const info = el('div', 't');
       const name = el('strong', '', t.name);
+      const h = healthCache[t.slug];
+      if (h) {
+        const dot = el('span', 'dot ' + h.state);
+        dot.title = HEALTH_LABEL[h.state] || h.state;
+        name.prepend(dot);
+      }
       if (t.type === 'proxy') name.append(el('span', 'chip-proxy', 'Proxy'));
       if (t.enabled === false) name.append(el('span', 'chip-maint', 'Wartung'));
+      if (t.require_mfa) name.append(el('span', 'chip-proxy', '2FA'));
       info.append(name, el('span', '', [t.category, t.description || 'Keine Beschreibung'].filter(Boolean).join(' · ')));
       cell.append(tile(t), info);
 
@@ -73,6 +85,12 @@ async function load() {
       const share = el('button', 'btn sm', 'Teilen');
       share.type = 'button';
       share.onclick = () => openShare(t.slug);
+      if (t.type !== 'proxy') {
+        const filesBtn = el('button', 'btn sm', 'Dateien');
+        filesBtn.type = 'button';
+        filesBtn.onclick = () => openFiles(t);
+        act.append(filesBtn);
+      }
       act.append(share, edit, del);
 
       row.append(cell, path, g, act);
@@ -92,6 +110,7 @@ function openDialog(t) {
   $('f-group').value = t ? t.group : '';
   $('f-cat').value = t ? (t.category || '') : '';
   $('f-maint').checked = !!t && t.enabled === false;
+  $('f-mfa').checked = !!t && !!t.require_mfa;
   const access = t && t.access === 'subdomain' ? 'subdomain' : 'path';
   document.querySelector(`input[name=access][value=${access}]`).checked = true;
   const kind = t && t.type === 'proxy' ? 'proxy' : 'static';
@@ -154,7 +173,7 @@ form.addEventListener('submit', async ev => {
   const access = document.querySelector('input[name=access]:checked').value;
   const body = {
     name: $('f-name').value, description: $('f-desc').value, icon: $('f-icon').value, group: $('f-group').value,
-    category: $('f-cat').value, enabled: !$('f-maint').checked, type, access,
+    category: $('f-cat').value, enabled: !$('f-maint').checked, require_mfa: $('f-mfa').checked, type, access,
   };
   if (type === 'proxy') { body.upstream = $('f-upstream').value.trim(); body.strip_prefix = $('f-strip').checked; }
   try {
@@ -196,6 +215,12 @@ async function loadShares() {
       const row = el('div', 'srow');
       const a = el('div');
       a.append(el('strong', '', sh.toolName), el('div', 'sub', '/' + sh.tool + '/ · von ' + (sh.createdBy || '?')));
+      const badges = el('div', 'badges');
+      if (sh.hasPin) badges.append(el('span', 'badge', 'PIN'));
+      if (sh.ips && sh.ips.length) { const b = el('span', 'badge', 'IP'); b.title = sh.ips.join(', '); badges.append(b); }
+      if (sh.schedule) { const b = el('span', 'badge', 'Zeitfenster'); b.title = scheduleText(sh.schedule); badges.append(b); }
+      if (sh.locked) badges.append(el('span', 'badge warn', 'gesperrt (PIN)'));
+      if (badges.childElementCount) a.append(badges);
       const b = el('div', '', sh.label || '–');
       const c = el('div');
       const used = sh.maxUses && sh.uses >= sh.maxUses;
@@ -215,6 +240,15 @@ async function loadShares() {
           try { await api('DELETE', '/_platform/api/admin/shares/' + encodeURIComponent(sh.id)); toast('Link widerrufen'); loadShares(); loadAudit(); }
           catch (e) { $('share-error').textContent = e.message; $('share-error').hidden = false; }
         });
+      if (sh.locked) {
+        const un = el('button', 'btn sm', 'Entsperren');
+        un.type = 'button';
+        un.onclick = async () => {
+          try { await api('PUT', '/_platform/api/admin/shares/' + encodeURIComponent(sh.id), { unlock: true }); toast('Link entsperrt'); loadShares(); }
+          catch (e) { $('share-error').textContent = e.message; $('share-error').hidden = false; }
+        };
+        d.append(un);
+      }
       d.append(chg, rev);
       row.append(a, b, c, u, d);
       list.append(row);
@@ -269,6 +303,19 @@ function openShare(slug, share) {
   if (slug) sel.value = slug;
   $('s-label').value = share ? share.label : '';
   $('s-max').value = share && share.maxUses ? share.maxUses : '';
+  $('s-pin').value = '';
+  $('s-pin').placeholder = share && share.hasPin ? 'leer = PIN unverändert lassen' : 'leer = ohne PIN';
+  $('s-pin-remove').checked = false;
+  $('s-pin-remove-row').hidden = !(share && share.hasPin);
+  $('s-ips').value = share && share.ips ? share.ips.join(', ') : '';
+  const sched = share && share.schedule;
+  $('s-sched-on').checked = !!sched;
+  $('s-sched').hidden = !sched;
+  for (const c of document.querySelectorAll('#s-sched .days input')) {
+    c.checked = sched ? sched.days.includes(+c.value) : +c.value < 5;
+  }
+  $('s-from').value = sched ? sched.from : '08:00';
+  $('s-to').value = sched ? sched.to : '18:00';
   $('s-dur').value = '86400';
   const soon = new Date(Date.now() + 86400000 - new Date().getTimezoneOffset() * 60000);
   $('s-date').value = soon.toISOString().slice(0, 16);
@@ -298,7 +345,15 @@ $('form-share').addEventListener('submit', async ev => {
   }
   btn.disabled = true;
   try {
-    const body = { label: $('s-label').value, max_uses: maxUses, ...expiry };
+    const body = { label: $('s-label').value, max_uses: maxUses, ips: $('s-ips').value, ...expiry };
+    if ($('s-pin').value) body.pin = $('s-pin').value;
+    else if (editingShare && $('s-pin-remove').checked) body.remove_pin = true;
+    if ($('s-sched-on').checked) {
+      body.schedule = {
+        days: [...document.querySelectorAll('#s-sched .days input:checked')].map(c => +c.value),
+        from: $('s-from').value, to: $('s-to').value,
+      };
+    } else body.schedule = null;
     if (editingShare) {
       await api('PUT', '/_platform/api/admin/shares/' + encodeURIComponent(editingShare.id), body);
       $('dlg-share').close();
@@ -337,6 +392,11 @@ const ACTIONS = {
   'share.open': e => ['Freigabe-Link geöffnet', e.tool + ' · ' + (e.ip || 'IP unbekannt') + ' · ' + e.uses + '. Öffnung'],
   'share.blocked': e => ['Freigabe-Link abgewiesen', e.tool + ' · ' + (e.ip || 'IP unbekannt') + ' · Limit erreicht'],
   'config.export': () => ['Konfiguration exportiert', ''],
+  'config.import': e => ['Konfiguration importiert', (e.tools || []).length + ' Tool(s) · ' + e.added + ' neu'],
+  'share.pin_failed': e => ['Falsche PIN eingegeben', e.tool + ' · ' + (e.ip || 'IP unbekannt')],
+  'files.upload': e => [e.unzip ? 'ZIP entpackt' : 'Datei hochgeladen', '/' + e.tool + '/' + e.path + (e.unzip ? ' · ' + e.files + ' Datei(en)' : '')],
+  'files.delete': e => ['Datei gelöscht', '/' + e.tool + '/' + e.path],
+  'notify.test': () => ['Test-Benachrichtigung angestoßen', ''],
 };
 
 async function loadAudit() {
@@ -374,6 +434,215 @@ $('export').onclick = async () => {
   } catch (e) { showError(e.message); }
 };
 
+$('s-sched-on').addEventListener('change', () => { $('s-sched').hidden = !$('s-sched-on').checked; });
+
+const DAY_NAMES = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+function scheduleText(s) {
+  return s.days.map(d => DAY_NAMES[d]).join(', ') + ' · ' + s.from + '–' + s.to + ' Uhr';
+}
+
+// ---------- Nutzung ----------
+async function loadUsage() {
+  const list = $('usage-list');
+  $('usage-error').hidden = true;
+  try {
+    const days = $('usage-days').value;
+    const data = await api('GET', '/_platform/api/admin/stats?days=' + days);
+    list.replaceChildren();
+    const names = Object.fromEntries(toolsCache.map(t => [t.slug, t.name]));
+    const rows = Object.entries(data.tools).sort((a, b) => b[1].total - a[1].total);
+    if (!rows.length) { list.append(el('div', 'table-empty', 'Noch keine Aufrufe im gewählten Zeitraum.')); return; }
+    for (const [slug, st] of rows) {
+      const row = el('div', 'urow');
+      const a = el('div');
+      a.append(el('strong', '', names[slug] || slug), el('div', 'sub', '/' + slug + '/'));
+      const spark = el('div', 'spark');
+      spark.title = 'Aufrufe pro Tag';
+      const max = Math.max(1, ...st.series);
+      for (const v of st.series) {
+        const bar = el('span', v ? '' : 'zero');
+        bar.style.height = Math.max(8, Math.round(v / max * 100)) + '%';
+        bar.title = v + ' Aufrufe';
+        spark.append(bar);
+      }
+      const total = el('div');
+      total.append(el('span', 'num', String(st.total)), el('div', 'sub', st.last7 + ' in 7 Tagen'));
+      const users = el('div', 'num', String(st.uniqueUsers));
+      const top = el('div', 'sub', st.topUsers.map(u => u.user + ' (' + u.count + ')').join(', '));
+      row.append(a, spark, total, users, top);
+      list.append(row);
+    }
+  } catch (e) { $('usage-error').textContent = e.message; $('usage-error').hidden = false; }
+}
+$('usage-days').addEventListener('change', loadUsage);
+
+// ---------- Überwachung ----------
+const HEALTH_LABEL = { up: 'erreichbar', down: 'nicht erreichbar', maintenance: 'Wartung', unknown: 'wird geprüft' };
+
+function ago(secs) {
+  const d = Date.now() / 1000 - secs;
+  if (d < 90) return 'gerade eben';
+  if (d < 3600) return 'seit ' + Math.round(d / 60) + ' Min.';
+  if (d < 86400) return 'seit ' + Math.round(d / 3600) + ' Std.';
+  return 'seit ' + Math.round(d / 86400) + ' Tagen';
+}
+
+async function loadMonitor() {
+  const list = $('monitor-list');
+  $('monitor-error').hidden = true;
+  try {
+    const data = await api('GET', '/_platform/api/admin/health');
+    const tools = data.tools || {};
+    list.replaceChildren();
+    const names = Object.fromEntries(toolsCache.map(t => [t.slug, t]));
+    const proxies = toolsCache.filter(t => t.type === 'proxy');
+    if (!data.updated) {
+      list.append(el('div', 'table-empty', 'Noch keine Daten. Läuft der Container tools-monitor? (docker compose ps)'));
+    } else if (!proxies.length) {
+      list.append(el('div', 'table-empty', 'Es gibt keine Weiterleitungs-Tools zum Überwachen.'));
+    }
+    for (const t of proxies) {
+      const h = tools[t.slug];
+      const row = el('div', 'mrow');
+      const a = el('div');
+      a.append(el('strong', '', t.name), el('div', 'sub', t.upstream));
+      const st = el('div');
+      st.append(el('span', 'dot ' + (h ? h.state : 'unknown')), document.createTextNode(HEALTH_LABEL[h ? h.state : 'unknown']));
+      const since = el('div', 'sub', h ? ago(h.since) : '–');
+      const resp = el('div', 'sub', h ? (h.detail || '') + (h.ms != null ? ' · ' + h.ms + ' ms' : '') : '–');
+      row.append(a, st, since, resp);
+      list.append(row);
+    }
+    const n = data.notify || {};
+    const active = ['ntfy', 'telegram', 'webhook'].filter(k => n[k]);
+    $('notify-targets').textContent = data.updated
+      ? 'Zuletzt geprüft: ' + when(data.updated) + ' · alle ' + data.interval + ' s. Benachrichtigungen: '
+        + (active.length ? active.join(', ') : 'keine eingerichtet (NOTIFY_… in der .env)') + '.'
+      : '';
+    return data;
+  } catch (e) { $('monitor-error').textContent = e.message; $('monitor-error').hidden = false; }
+}
+
+$('notify-test').onclick = async () => {
+  const btn = $('notify-test');
+  btn.disabled = true;
+  try {
+    const before = ((await api('GET', '/_platform/api/admin/health')).test || {}).ts || 0;
+    await api('POST', '/_platform/api/admin/notify-test', {});
+    toast('Test wird gesendet …');
+    for (let i = 0; i < 15; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      const t = (await api('GET', '/_platform/api/admin/health')).test;
+      if (t && t.ts > before) {
+        if (!t.results.length) toast('Keine Benachrichtigung eingerichtet (NOTIFY_… in der .env)');
+        else toast(t.results.map(r => r.target + ': ' + (r.ok ? 'OK' : 'Fehler – ' + r.error)).join(' · '));
+        return;
+      }
+    }
+    toast('Keine Antwort vom Monitor. Läuft tools-monitor?');
+  } catch (e) { $('monitor-error').textContent = e.message; $('monitor-error').hidden = false; }
+  finally { btn.disabled = false; }
+};
+
+// ---------- Dateien ----------
+let filesTool = null;
+const fmtSize = n => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+
+async function loadFiles() {
+  const list = $('files-list');
+  $('files-error').hidden = true;
+  try {
+    const data = await api('GET', '/_platform/api/admin/files/' + encodeURIComponent(filesTool.slug));
+    list.replaceChildren();
+    if (!data.files.length) { list.append(el('div', 'table-empty', 'Noch keine Dateien.')); return; }
+    for (const f of data.files) {
+      const row = el('div', 'frow');
+      const link = el('a', 'mono', f.path);
+      link.href = '/' + filesTool.slug + '/' + f.path.split('/').map(encodeURIComponent).join('/');
+      link.target = '_blank';
+      link.rel = 'noopener';
+      const del = el('button', 'btn sm danger', 'Löschen');
+      del.type = 'button';
+      del.onclick = async () => {
+        try {
+          await api('DELETE', '/_platform/api/admin/files/' + encodeURIComponent(filesTool.slug) + '?path=' + encodeURIComponent(f.path));
+          loadFiles();
+        } catch (e) { $('files-error').textContent = e.message; $('files-error').hidden = false; }
+      };
+      row.append(link, el('span', 'size', fmtSize(f.size)), el('span', 'date', when(f.mtime)), del);
+      list.append(row);
+    }
+    if (data.truncated) list.append(el('div', 'table-empty', 'Liste gekürzt (sehr viele Dateien).'));
+  } catch (e) { $('files-error').textContent = e.message; $('files-error').hidden = false; }
+}
+
+function openFiles(t) {
+  filesTool = t;
+  $('files-title').textContent = 'Dateien von „' + t.name + '“';
+  $('files-input').value = '';
+  $('files-progress').textContent = '';
+  $('dlg-files').showModal();
+  loadFiles();
+}
+
+$('files-upload').onclick = async () => {
+  const files = [...$('files-input').files];
+  if (!files.length) { $('files-error').textContent = 'Bitte zuerst Dateien auswählen.'; $('files-error').hidden = false; return; }
+  const dir = $('files-dir').value.trim().replace(/^\/+|\/+$/g, '');
+  const btn = $('files-upload');
+  btn.disabled = true;
+  $('files-error').hidden = true;
+  try {
+    let done = 0;
+    for (const f of files) {
+      $('files-progress').textContent = 'Lade hoch: ' + f.name + ' (' + (++done) + ' von ' + files.length + ') …';
+      const unzip = $('files-unzip').checked && /\.zip$/i.test(f.name);
+      const path = (dir ? dir + '/' : '') + f.name;
+      const res = await fetch('/_platform/api/admin/files/' + encodeURIComponent(filesTool.slug)
+        + '?path=' + encodeURIComponent(path) + (unzip ? '&unzip=1' : ''), {
+        method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: f,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(f.name + ': ' + (data.error || (res.status === 413 ? 'Datei zu groß' : 'Fehler ' + res.status)));
+    }
+    $('files-progress').textContent = files.length + ' Datei(en) hochgeladen.';
+    $('files-input').value = '';
+    loadFiles();
+    loadAudit();
+  } catch (e) {
+    $('files-error').textContent = e.message;
+    $('files-error').hidden = false;
+    $('files-progress').textContent = '';
+  } finally { btn.disabled = false; }
+};
+
+// ---------- Import ----------
+$('import').onclick = () => $('import-file').click();
+$('import-file').addEventListener('change', async () => {
+  const file = $('import-file').files[0];
+  $('import-file').value = '';
+  if (!file) return;
+  let data;
+  try {
+    data = JSON.parse(await file.text());
+  } catch (e) { showError('Die Datei ist kein gültiges JSON.'); return; }
+  const tools = data && data.tools;
+  if (!tools || typeof tools !== 'object' || !Object.keys(tools).length) { showError('In der Datei sind keine Tools.'); return; }
+  const existing = new Set(toolsCache.map(t => t.slug));
+  const slugs = Object.keys(tools);
+  const upd = slugs.filter(s => existing.has(s)).length;
+  confirmDialog('Konfiguration importieren?',
+    slugs.length + ' Tool(s) aus „' + file.name + '“: ' + (slugs.length - upd) + ' neu, ' + upd
+      + ' vorhandene werden überschrieben. Tools, die nicht in der Datei stehen, bleiben erhalten.',
+    'Importieren', async () => {
+      try {
+        const r = await api('POST', '/_platform/api/admin/import', { tools, mode: 'merge' });
+        toast(r.imported + ' Tool(s) importiert');
+        load(); loadAudit();
+      } catch (e) { showError(e.message); }
+    });
+});
+
 async function loadDomain() {
   try {
     toolsDomain = (await api('GET', '/_platform/api/me')).toolsDomain || '';
@@ -383,6 +652,7 @@ async function loadDomain() {
 }
 
 loadDomain();
-load();
+load().then(() => { loadUsage(); loadMonitor(); });
 loadShares();
 loadAudit();
+setInterval(() => { if (!document.hidden) loadMonitor(); }, 60000);

@@ -22,25 +22,35 @@
     <a class="btn ghost" href="/">Zum Portal</a>
   </div>
 </header>
+<nav class="subnav" aria-label="Bereiche">
+  <div class="wrap subnav-inner">
+    <a href="#tools">Tools</a><a href="#shares">Freigaben</a><a href="#usage">Nutzung</a><a href="#monitor">Überwachung</a><a href="#audit">Protokoll</a>
+  </div>
+</nav>
 <main class="wrap">
-  <section class="hero row-between">
+  <section class="hero row-between" id="tools">
     <div>
       <h1>Tools verwalten</h1>
       <p class="muted">Jedes Tool ist einer Authentik-Gruppe zugeordnet. Nur Mitglieder dieser Gruppe sowie Admins können es sehen und öffnen.</p>
     </div>
-    <button id="new" class="btn primary" type="button">
-      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-      Neues Tool
-    </button>
+    <div class="btnrow">
+      <button id="import" class="btn" type="button">Importieren</button>
+      <button id="export" class="btn" type="button">Exportieren</button>
+      <button id="new" class="btn primary" type="button">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Neues Tool
+      </button>
+    </div>
+    <input type="file" id="import-file" accept="application/json,.json" hidden>
   </section>
   <p id="error" class="alert" role="alert" hidden></p>
   <div class="panel">
     <div class="table-head"><span>Tool</span><span>Adresse</span><span>Gruppe</span><span></span></div>
     <div id="list"></div>
   </div>
-  <p class="hint">Dateien eines Tools legst du auf dem Server im Ordner <code>sites/&lt;pfad&gt;/</code> ab.</p>
+  <p class="hint">Dateien eines Dateien-Tools lädst du über „Dateien“ hoch (auch als ZIP), oder du legst sie auf dem Server in <code>sites/&lt;kurzname&gt;/</code> ab.</p>
 
-  <section class="hero row-between section-gap">
+  <section class="hero row-between section-gap" id="shares">
     <div>
       <h2>Freigabe-Links</h2>
       <p class="muted">Öffentliche Links ohne Login, zeitlich begrenzt und jederzeit widerrufbar. Wer den Link hat, kann das Tool nutzen.</p>
@@ -56,14 +66,46 @@
     <div id="share-list"></div>
   </div>
 
-  <section class="hero row-between section-gap">
+  <section class="hero row-between section-gap" id="usage">
+    <div>
+      <h2>Nutzung</h2>
+      <p class="muted">Seitenaufrufe angemeldeter Nutzer pro Tool (ohne Bilder, Skripte und API-Anfragen). Gespeichert werden 90 Tage.</p>
+    </div>
+    <select id="usage-days" class="select-inline" aria-label="Zeitraum">
+      <option value="7">7 Tage</option>
+      <option value="30" selected>30 Tage</option>
+      <option value="90">90 Tage</option>
+    </select>
+  </section>
+  <p id="usage-error" class="alert" role="alert" hidden></p>
+  <div class="panel">
+    <div class="table-head usage"><span>Tool</span><span>Verlauf</span><span>Aufrufe</span><span>Personen</span><span>Am meisten genutzt von</span></div>
+    <div id="usage-list"></div>
+  </div>
+
+  <section class="hero row-between section-gap" id="monitor">
+    <div>
+      <h2>Überwachung</h2>
+      <p class="muted" id="monitor-info">Prüft regelmäßig, ob die Ziele der Weiterleitungs-Tools antworten, und meldet Ausfälle.</p>
+    </div>
+    <div class="btnrow">
+      <button id="notify-test" class="btn" type="button">Test-Benachrichtigung</button>
+    </div>
+  </section>
+  <p id="monitor-error" class="alert" role="alert" hidden></p>
+  <div class="panel">
+    <div class="table-head monitor"><span>Tool</span><span>Status</span><span>Seit</span><span>Antwort</span></div>
+    <div id="monitor-list"></div>
+  </div>
+  <p class="hint" id="notify-targets"></p>
+
+  <section class="hero row-between section-gap" id="audit">
     <div>
       <h2>Protokoll</h2>
       <p class="muted">Wer hat wann was geändert, und wann wurden Freigabe-Links geöffnet (mit IP-Adresse).</p>
     </div>
     <div class="btnrow">
       <button id="audit-reload" class="btn" type="button">Aktualisieren</button>
-      <button id="export" class="btn" type="button">Konfiguration exportieren</button>
     </div>
   </section>
   <p id="audit-error" class="alert" role="alert" hidden></p>
@@ -119,6 +161,7 @@
           <input id="f-group" required maxlength="64" placeholder="tool-home-assistant-fix">
         </label>
       </div>
+      <label class="check"><input type="checkbox" id="f-mfa"><span>Zwei-Faktor-Anmeldung erforderlich<small>Nur Personen, die sich mit zweitem Faktor angemeldet haben, kommen hinein (gilt auch für Admins). Braucht das 2FA-Mapping in Authentik, siehe README.</small></span></label>
       <label class="check"><input type="checkbox" id="f-maint"><span>Wartungsmodus<small>Tool vorübergehend sperren. Nutzer und Freigabe-Links sehen eine Wartungsseite, Admins kommen weiter hinein.</small></span></label>
       <p id="dlg-error" class="alert" role="alert" hidden></p>
     </div>
@@ -179,6 +222,25 @@
         </label>
       </div>
       <p class="muted" id="s-preview"></p>
+      <label>PIN oder Passwort <span class="opt">optional</span>
+        <input id="s-pin" type="password" maxlength="64" autocomplete="new-password" placeholder="leer = ohne PIN">
+        <small id="s-pin-hint">Gäste müssen sie vor dem Öffnen eingeben. Schicke sie getrennt vom Link (z.&nbsp;B. per SMS). Nach 5 Fehlversuchen ist der Link 10 Minuten gesperrt.</small>
+      </label>
+      <label class="check" id="s-pin-remove-row" hidden><input type="checkbox" id="s-pin-remove"><span>PIN entfernen</span></label>
+      <label>Nur von diesen IP-Adressen <span class="opt">optional</span>
+        <textarea id="s-ips" rows="2" placeholder="z. B. 203.0.113.7, 192.168.1.0/24"></textarea>
+        <small>Leer = von überall. Einzelne IPs oder Netze, durch Komma oder Zeilenumbruch getrennt.</small>
+      </label>
+      <label class="check"><input type="checkbox" id="s-sched-on"><span>Nur zu bestimmten Zeiten<small>Außerhalb des Zeitfensters ist der Link gesperrt, auch für Gäste, die ihn gerade offen haben.</small></span></label>
+      <div id="s-sched" hidden>
+        <div class="days" role="group" aria-label="Wochentage">
+          <label><input type="checkbox" value="0" checked>Mo</label><label><input type="checkbox" value="1" checked>Di</label><label><input type="checkbox" value="2" checked>Mi</label><label><input type="checkbox" value="3" checked>Do</label><label><input type="checkbox" value="4" checked>Fr</label><label><input type="checkbox" value="5">Sa</label><label><input type="checkbox" value="6">So</label>
+        </div>
+        <div class="two">
+          <label>Von<input id="s-from" type="time" value="08:00"></label>
+          <label>Bis<input id="s-to" type="time" value="18:00"></label>
+        </div>
+      </div>
       <label>Maximale Öffnungen <span class="opt">optional</span>
         <input id="s-max" type="number" min="1" step="1" placeholder="unbegrenzt">
         <small>Wie viele verschiedene Browser den Link öffnen dürfen. <strong>1 = Einmal-Link.</strong> Wer ihn schon offen hat, kann weiterarbeiten.</small>
@@ -205,6 +267,29 @@
       <p class="muted" id="link-session" hidden>Hinweis: Gäste nutzen die App danach direkt unter der Hauptadresse (z. B. <code>/</code>), damit auch Apps mit absoluten Pfaden funktionieren. Zum Testen ein privates Fenster nehmen, in dem du nicht angemeldet bist.</p>
     </div>
     <footer class="dlg-foot"><button class="btn">Fertig</button></footer>
+  </form>
+</dialog>
+<dialog id="dlg-files" class="wide">
+  <form method="dialog">
+    <header class="dlg-head"><h2 id="files-title">Dateien</h2></header>
+    <div class="dlg-body">
+      <div class="upload">
+        <label>Dateien hochladen
+          <input type="file" id="files-input" multiple>
+        </label>
+        <div class="two">
+          <label>In Ordner <span class="opt">optional</span>
+            <input id="files-dir" placeholder="z. B. bilder (leer = oberste Ebene)">
+          </label>
+        </div>
+        <label class="check"><input type="checkbox" id="files-unzip" checked><span>ZIP-Dateien entpacken<small>Ein gemeinsamer Oberordner im ZIP wird weggelassen. Vorhandene Dateien werden überschrieben.</small></span></label>
+        <button class="btn primary" type="button" id="files-upload">Hochladen</button>
+        <p class="muted" id="files-progress"></p>
+      </div>
+      <p id="files-error" class="alert" role="alert" hidden></p>
+      <div class="filelist" id="files-list"></div>
+    </div>
+    <footer class="dlg-foot"><button class="btn">Schließen</button></footer>
   </form>
 </dialog>
 <div id="toast" class="toast" role="status" hidden></div>

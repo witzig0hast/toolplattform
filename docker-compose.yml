@@ -16,6 +16,19 @@ x-hardening: &hardening
   tmpfs: [/tmp]
 
 services:
+  # Legt beim Start ./data, ./data/status und ./sites an und gibt sie dem Plattform-Nutzer
+  # (sonst würde Docker sie als root anlegen und die Plattform könnte nichts speichern). Beendet sich danach.
+  tools-init:
+    image: busybox:1.36
+    container_name: tools-init
+    user: "0:0"
+    network_mode: none
+    restart: "no"
+    command: ["sh", "-c", "mkdir -p /data/status /srv/sites && chown -R ${TOOLS_UID:-1000}:${TOOLS_GID:-1000} /data /srv/sites"]
+    volumes:
+      - ./data:/data
+      - ./sites:/srv/sites
+
   tools-web:
     <<: *hardening
     build:
@@ -35,6 +48,9 @@ services:
     build: ./app
     image: toolplattform-api:latest
     container_name: tools-api
+    depends_on:
+      tools-init:
+        condition: service_completed_successfully
     user: "${TOOLS_UID:-1000}:${TOOLS_GID:-1000}"
     environment:
       ADMIN_GROUP: ${ADMIN_GROUP:-tools-admin}
@@ -51,7 +67,9 @@ services:
     build: ./app                     # gleiches Image wie tools-api (aus dem Cache)
     image: toolplattform-api:latest
     container_name: tools-monitor
-    depends_on: [tools-api]
+    depends_on:
+      tools-init:
+        condition: service_completed_successfully
     command: ["python", "/app/monitor.py"]
     user: "${TOOLS_UID:-1000}:${TOOLS_GID:-1000}"
     environment:

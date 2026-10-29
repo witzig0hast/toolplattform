@@ -19,8 +19,7 @@ Browser ──► Nginx Proxy Manager ──(fragt)──► Authentik: "ist der
 ```
 cp .env.example .env     # NPM_NETWORK, TOOLS_DOMAIN, TOOLS_UID/TOOLS_GID, NOTIFY_… anpassen (Hinweise stehen in der Datei)
 openssl rand -hex 32     # erzeugt ein Geheimnis -> in .env bei TOOLS_SECRET eintragen
-mkdir -p data/status     # vorher anlegen, damit die Ordner deinem Nutzer gehören
-docker compose up -d --build
+docker compose up -d --build   # legt data/ und sites/ selbst mit den richtigen Rechten an
 ```
 
 ### 2. Authentik
@@ -156,7 +155,6 @@ Die Plattform lässt Tools mit 2FA-Pflicht nur zu, wenn Authentik den Header `X-
 ## Update einer bestehenden Installation
 ```
 git pull
-mkdir -p data/status
 # .env um die neuen Einträge aus .env.example ergänzen (TZ, HEALTH_…, NOTIFY_…)
 docker compose up -d --build
 ```

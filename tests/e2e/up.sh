@@ -73,6 +73,11 @@ python3 $H/mockapp.py 10.99.0.3 Strom-App >/dev/null 2>&1 &
 python3 $H/mockapp.py 10.99.0.2 NPM-App >/dev/null 2>&1 &
 python3 $H/mockapp.py 10.99.0.4 Basis-App >/dev/null 2>&1 &
 python3 $H/mock_authentik.py >/dev/null 2>&1 &
-TOOLS_DATA=$T/data/tools.json TOOLS_SITES=$T/sites TOOLS_SECRET=geheim TOOLS_DOMAIN=tools.test python3 $R/app/server.py >$T/api.log 2>&1 &
+TOOLS_DATA=$T/data/tools.json TOOLS_SITES=$T/sites TOOLS_SECRET=geheim TOOLS_DOMAIN=tools.test \
+  TOOLS_API_SELF=http://127.0.0.1:8000 python3 $R/app/server.py >$T/api.log 2>&1 &
+python3 $H/mock_webhook.py $T/notifications.log >/dev/null 2>&1 &
+mkdir -p $T/data/status
+NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost TOOLS_DATA=$T/data/tools.json HEALTH_INTERVAL=3 HEALTH_FAILS=1 HEALTH_TIMEOUT=2 \
+  NOTIFY_WEBHOOK_URL=http://127.0.0.1:9200/hook python3 $R/app/monitor.py >$T/monitor.log 2>&1 &
 sleep 1
 nginx -c $T/nginx.conf -p $T/ngx && echo "Testumgebung läuft"

@@ -1,48 +1,78 @@
-# tools-web:  nginx, liefert Portal + Tool-Dateien aus bzw. leitet an Tool-Container weiter, prüft Rechte über tools-api.
-#             Kein veröffentlichter Port - nur der Nginx Proxy Manager erreicht ihn:
-#               Port 8080 = tools.example.de (Portal + Tools unter /<pfad>/)
-#               Port 8082 = *.tools.example.de (Tools mit eigener Subdomain)
-# tools-api:  kleines Python-Backend (Tool-Liste, Rechte, Admin-API). Nur im internen Netz.
-# Bind-Mounts nur für das, was du selbst pflegst: ./sites (Tool-Dateien) und ./data (Tool-Liste).
+# tools-web:     nginx, liefert Portal + Tool-Dateien aus bzw. leitet an Tool-Container weiter, prüft Rechte über tools-api.
+#                Kein veröffentlichter Port - nur der Nginx Proxy Manager erreicht ihn:
+#                  Port 8080 = tools.example.de (Portal + Tools unter /<pfad>/)
+#                  Port 8082 = *.tools.example.de (Tools mit eigener Subdomain)
+# tools-api:     kleines Python-Backend (Tool-Liste, Rechte, Freigabe-Links, Protokoll, Admin-API). Nur im internen Netz.
+# tools-monitor: prüft, ob die Ziele der Weiterleitungs-Tools erreichbar sind, und schickt Benachrichtigungen.
+#                Liest die Tool-Liste nur; kennt das Geheimnis nicht; kann das Backend nicht erreichen.
+# Bind-Mounts nur für das, was du selbst pflegst: ./sites (Tool-Dateien) und ./data (Tool-Liste, Links, Protokoll, Status).
 name: toolplattform
+
+x-hardening: &hardening
+  restart: unless-stopped
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  read_only: true
+  tmpfs: [/tmp]
 
 services:
   tools-web:
+    <<: *hardening
     build:
       context: .
       dockerfile: nginx/Dockerfile
     image: toolplattform-web:latest
     container_name: tools-web
-    restart: unless-stopped
     depends_on:
       tools-api:
         condition: service_healthy
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    read_only: true
-    tmpfs: [/tmp]
     volumes:
       - ./sites:/srv/sites:ro
     networks: [npm, internal, tools]
 
   tools-api:
+    <<: *hardening
     build: ./app
     image: toolplattform-api:latest
     container_name: tools-api
-    restart: unless-stopped
     user: "${TOOLS_UID:-1000}:${TOOLS_GID:-1000}"
     environment:
       ADMIN_GROUP: ${ADMIN_GROUP:-tools-admin}
       TOOLS_DOMAIN: ${TOOLS_DOMAIN:-}
       TOOLS_SECRET: ${TOOLS_SECRET:?TOOLS_SECRET in .env setzen (openssl rand -hex 32)}
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    read_only: true
-    tmpfs: [/tmp]
+      TZ: ${TZ:-Europe/Berlin}
     volumes:
       - ./data:/data
       - ./sites:/srv/sites
     networks: [internal]
+
+  tools-monitor:
+    <<: *hardening
+    build: ./app                     # gleiches Image wie tools-api (aus dem Cache)
+    image: toolplattform-api:latest
+    container_name: tools-monitor
+    depends_on: [tools-api]
+    command: ["python", "/app/monitor.py"]
+    user: "${TOOLS_UID:-1000}:${TOOLS_GID:-1000}"
+    environment:
+      TOOLS_DOMAIN: ${TOOLS_DOMAIN:-}
+      TZ: ${TZ:-Europe/Berlin}
+      HEALTH_INTERVAL: ${HEALTH_INTERVAL:-60}
+      HEALTH_FAILS: ${HEALTH_FAILS:-2}
+      NOTIFY_NTFY_URL: ${NOTIFY_NTFY_URL:-}
+      NOTIFY_NTFY_TOKEN: ${NOTIFY_NTFY_TOKEN:-}
+      NOTIFY_TELEGRAM_TOKEN: ${NOTIFY_TELEGRAM_TOKEN:-}
+      NOTIFY_TELEGRAM_CHAT: ${NOTIFY_TELEGRAM_CHAT:-}
+      NOTIFY_WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
+    volumes:
+      - ./data:/data:ro              # Tool-Liste nur lesen
+      - ./data/status:/data/status   # hier schreibt der Monitor den Status
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(0 if time.time()-os.path.getmtime('/data/status/health.json')<600 else 1)"]
+      interval: 60s
+      timeout: 5s
+      start_period: 120s
+    networks: [tools, egress]
 
 networks:
   npm:
@@ -53,3 +83,5 @@ networks:
   # Gemeinsames Netz für Tool-Container, an die weitergeleitet werden soll
   tools:
     name: toolplattform_tools
+  # Internetzugang nur für Benachrichtigungen des Monitors
+  egress: {}

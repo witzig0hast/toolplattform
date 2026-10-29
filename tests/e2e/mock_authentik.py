@@ -5,6 +5,12 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
         if self.path.startswith('/outpost.goauthentik.io/auth/nginx'):
+            if 'authsess=3' in (self.headers.get('Cookie') or ''):
+                self.send_response(200)
+                self.send_header('X-authentik-username', 'mona')
+                self.send_header('X-authentik-groups', 'tool-strom')
+                self.send_header('X-authentik-mfa', '1')
+                self.end_headers(); return
             if 'authsess=2' in (self.headers.get('Cookie') or ''):
                 self.send_response(200)
                 self.send_header('X-authentik-username', 'anna')

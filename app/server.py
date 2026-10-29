@@ -4,6 +4,8 @@
 - Entscheidet für nginx (auth_request), wer welches Tool sehen darf und wohin die Anfrage geht
 - Liefert die API für Portal- und Admin-Seite
 - Schreibt ein Protokoll (data/audit.log) über Admin-Aktionen und geöffnete Freigabe-Links
+- Freigabe-Links mit PIN, IP-Beschränkung und Zeitfenster; Nutzungsstatistik, Favoriten,
+  Import/Export, Datei-Upload für Dateien-Tools, Anzeige des Überwachungs-Status (monitor.py)
 
 Vertraut den Headern X-Authentik-Username / X-Authentik-Groups nur zusammen mit dem gemeinsamen
 Geheimnis (TOOLS_SECRET), das nur der Nginx Proxy Manager kennt. Darf ausschließlich über den
@@ -20,9 +22,19 @@ import secrets
 import tempfile
 import threading
 import time
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
+
+import files as filestore
+from stats import Stats
+
+try:
+    from zoneinfo import ZoneInfo
+    TZ = ZoneInfo(os.environ.get("TZ") or "Europe/Berlin")
+except Exception:  # ohne Zeitzonen-Daten: UTC
+    TZ = timezone.utc
 
 DATA_FILE = Path(os.environ.get("TOOLS_DATA", "/data/tools.json"))
 SITES_DIR = Path(os.environ.get("TOOLS_SITES", "/srv/sites"))
@@ -34,6 +46,10 @@ TOOLS_SECRET = os.environ.get("TOOLS_SECRET", "")
 # Interner nginx-Server (nur im Container erreichbar), der die statischen Tool-Dateien ausliefert
 STATIC_UPSTREAM = "http://127.0.0.1:8081"
 MAINTENANCE_TARGET = STATIC_UPSTREAM + "/_maintenance"
+MFA_TARGET = STATIC_UPSTREAM + "/_mfa"                    # Seite "2FA erforderlich"
+SHARE_BLOCKED_TARGET = STATIC_UPSTREAM + "/_share_blocked"  # Seite "Link gerade nicht freigegeben"
+# So erreicht tools-web dieses Backend (für die PIN-Abfrage bei Freigabe-Links)
+TOOLS_API_SELF = os.environ.get("TOOLS_API_SELF", "http://tools-api:8000").rstrip("/")
 COOKIE_NAME = "tools_last"      # zuletzt genutztes Tool (angemeldete Nutzer, absolute Pfade)
 SHARE_COOKIE = "tools_share"    # Freigabe-Sitzung (Gäste ohne Login)
 NO_REDIRECT = ("/_none_/", "/_none_/")  # Platzhalter: nginx proxy_redirect ohne Wirkung
@@ -45,6 +61,17 @@ SHARE_MAX_SECONDS = 365 * 24 * 3600
 SHARE_MAX_ACTIVE = 200
 SHARE_MAX_USES = 100000
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{20,100}")
+PIN_MIN, PIN_MAX = 4, 64
+PIN_ITERATIONS = 200_000
+PIN_MAX_FAILS = 5              # danach Sperre
+PIN_LOCK_SECONDS = 10 * 60
+SHARE_MAX_IPS = 20
+# Signatur-Schlüssel für Freigabe-Sitzungen (abgeleitet vom gemeinsamen Geheimnis)
+COOKIE_KEY = hmac.new(TOOLS_SECRET.encode(), b"tools-share-session-v1", hashlib.sha256).digest()
+
+# Überwachung (geschrieben vom Container tools-monitor)
+STATUS_DIR = DATA_FILE.parent / "status"
+HEALTH_FILE = STATUS_DIR / "health.json"
 
 # Protokoll
 AUDIT_FILE = DATA_FILE.parent / "audit.log"
@@ -53,7 +80,9 @@ AUDIT_MAX_BYTES = 1024 * 1024
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
 RESERVED_SLUGS = {"api", "admin", "assets", "s"}
 MAX_BODY = 8 * 1024
+MAX_IMPORT = 1024 * 1024
 _lock = threading.Lock()
+STATS = Stats(DATA_FILE.parent, _lock)
 
 
 # ---------- Speicher ----------
@@ -188,6 +217,7 @@ def validate_tool(body):
         "type": kind,
         "access": body.get("access", "path"),
         "enabled": validate_bool(body, "enabled", True),
+        "require_mfa": validate_bool(body, "require_mfa", False),
     }
     if tool["access"] not in ("path", "subdomain"):
         raise ValueError("Aufruf muss 'path' oder 'subdomain' sein")
@@ -223,6 +253,81 @@ def validate_max_uses(body):
     if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= SHARE_MAX_USES:
         raise ValueError("Maximale Öffnungen: leer lassen oder eine Zahl ab 1")
     return value
+
+
+def hash_pin(pin, salt=None):
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", pin.encode(), bytes.fromhex(salt), PIN_ITERATIONS).hex()
+    return {"salt": salt, "hash": digest}
+
+
+def check_pin(pin, stored):
+    digest = hashlib.pbkdf2_hmac("sha256", pin.encode(), bytes.fromhex(stored["salt"]), PIN_ITERATIONS).hex()
+    return hmac.compare_digest(digest, stored["hash"])
+
+
+def validate_pin(value):
+    if not isinstance(value, str) or not PIN_MIN <= len(value) <= PIN_MAX or any(ord(c) < 32 for c in value):
+        raise ValueError(f"PIN/Passwort: {PIN_MIN} bis {PIN_MAX} Zeichen")
+    return hash_pin(value)
+
+
+def validate_ips(value):
+    """Liste aus IPs/Netzen ("192.168.1.0/24", "203.0.113.7"). Leere Liste = keine Beschränkung."""
+    if value in (None, "", []):
+        return []
+    if isinstance(value, str):
+        value = [v for v in re.split(r"[\s,;]+", value) if v]
+    if not isinstance(value, list) or len(value) > SHARE_MAX_IPS:
+        raise ValueError(f"Höchstens {SHARE_MAX_IPS} IP-Adressen/Netze")
+    out = []
+    for v in value:
+        try:
+            out.append(str(ipaddress.ip_network(str(v).strip(), strict=False)))
+        except ValueError:
+            raise ValueError(f"Ungültige IP-Adresse oder Netz: {v!r}")
+    return out
+
+
+TIME_RE = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
+
+
+def validate_schedule(value):
+    """Zeitfenster {"days": [0..6] (0 = Montag), "from": "08:00", "to": "18:00"} oder None."""
+    if value in (None, {}, ""):
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("Ungültiges Zeitfenster")
+    days = value.get("days", [])
+    if not isinstance(days, list) or not days or any(not isinstance(d, int) or isinstance(d, bool) or not 0 <= d <= 6 for d in days):
+        raise ValueError("Zeitfenster: mindestens einen Wochentag wählen")
+    start, end = value.get("from", ""), value.get("to", "")
+    if not TIME_RE.match(str(start)) or not TIME_RE.match(str(end)) or start == end:
+        raise ValueError("Zeitfenster: Uhrzeiten im Format HH:MM, Beginn ungleich Ende")
+    return {"days": sorted(set(days)), "from": start, "to": end}
+
+
+def in_schedule(schedule, now=None):
+    """Liegt der Zeitpunkt im Zeitfenster? Fenster über Mitternacht (22:00-06:00) zählen zum Starttag."""
+    if not schedule:
+        return True
+    t = datetime.fromtimestamp(now or time.time(), TZ)
+    hm = t.strftime("%H:%M")
+    if schedule["from"] < schedule["to"]:
+        return t.weekday() in schedule["days"] and schedule["from"] <= hm < schedule["to"]
+    if hm >= schedule["from"]:
+        return t.weekday() in schedule["days"]
+    return (t.weekday() - 1) % 7 in schedule["days"] and hm < schedule["to"]
+
+
+def ip_allowed(allowed, client_ip):
+    if not allowed:
+        return True
+    try:
+        ip = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return False
+    return any(ip in ipaddress.ip_network(net) for net in allowed)
 
 
 # ---------- Rechte & Ziele ----------
@@ -266,8 +371,8 @@ def tool_url(slug, tool):
     return f"/{slug}/"
 
 
-def result(target, redir=NO_REDIRECT, cookie=""):
-    return {"target": target, "redir": redir, "cookie": cookie}
+def result(target, redir=NO_REDIRECT, cookie="", slug=""):
+    return {"target": target, "redir": redir, "cookie": cookie, "slug": slug}
 
 
 def maintenance():
@@ -288,9 +393,36 @@ def share_session_mode(tool):
     return tool.get("type") == "proxy" and (tool.get("strip_prefix", True) or tool.get("access") == "subdomain")
 
 
-def share_cookie(token, expires):
-    max_age = max(0, int(expires - time.time()))
-    return f"{SHARE_COOKIE}={token}; Path=/; Max-Age={max_age}; HttpOnly; Secure; SameSite=Lax"
+def _session_sig(token, share):
+    # "nonce" ändert sich bei neuer PIN -> alte Sitzungen werden ungültig
+    msg = (token + "|" + share.get("nonce", "")).encode()
+    return hmac.new(COOKIE_KEY, msg, hashlib.sha256).hexdigest()[:40]
+
+
+def share_cookie(token, share):
+    """Signiertes Sitzungs-Cookie: Wer nur den Link kennt, kann es nicht selbst bauen (wichtig bei PIN)."""
+    max_age = max(0, int(share["expires"] - time.time()))
+    return f"{SHARE_COOKIE}={token}.{_session_sig(token, share)}; Path=/; Max-Age={max_age}; HttpOnly; Secure; SameSite=Lax"
+
+
+def session_token(cookie_header):
+    """Token aus dem Sitzungs-Cookie (noch ungeprüft)."""
+    return parse_cookie(cookie_header, SHARE_COOKIE).rpartition(".")[0]
+
+
+def session_ok(cookie_header, token, share):
+    value = parse_cookie(cookie_header, SHARE_COOKIE)
+    tok, _, sig = value.rpartition(".")
+    return bool(sig) and tok == token and hmac.compare_digest(sig, _session_sig(token, share))
+
+
+def share_access(share, client_ip):
+    """IP-Beschränkung und Zeitfenster prüfen. Gibt None (erlaubt) oder den Grund zurück."""
+    if not ip_allowed(share.get("ips"), client_ip):
+        return "ip"
+    if not in_schedule(share.get("schedule")):
+        return "schedule"
+    return None
 
 
 def find_share(token, tools):
@@ -323,7 +455,7 @@ def open_share(key, client_ip):
 
 
 def resolve_share_path(raw_path, suffix, segments, tools, cookie_header, client_ip):
-    """Freigabe-Link /s/<token>/... (ohne Login, zeitlich begrenzt)."""
+    """Freigabe-Link /s/<token>/... (ohne Login, zeitlich begrenzt, optional PIN/IP/Zeitfenster)."""
     token = segments[2] if len(segments) > 2 else ""
     key, share, tool = find_share(token, tools)
     if not share:
@@ -333,12 +465,22 @@ def resolve_share_path(raw_path, suffix, segments, tools, cookie_header, client_
         return None
     if not tool_enabled(tool):
         return maintenance()  # vor dem Zählen: ein Besuch während der Wartung verbraucht keine Öffnung
+    if share_access(share, client_ip):
+        return result(SHARE_BLOCKED_TARGET)
     cookie = ""
-    if parse_cookie(cookie_header, SHARE_COOKIE) != token:
+    if not session_ok(cookie_header, token, share):
+        if share.get("pin"):
+            # PIN-Abfrage (Formular vom Backend). Erst nach richtiger PIN wird gezählt und das Cookie gesetzt.
+            return result(f"{TOOLS_API_SELF}/_gate/{token}")
         # Neuer Besucher: zählen (und ggf. am Limit scheitern), dann Sitzungs-Cookie setzen
         if not open_share(key, client_ip):
             return None
-        cookie = share_cookie(token, share["expires"])
+        cookie = share_cookie(token, share)
+    return share_destination(raw_path, suffix, token, share, tool, cookie)
+
+
+def share_destination(raw_path, suffix, token, share, tool, cookie=""):
+    prefix = "/s/" + token
     if share_session_mode(tool):
         # Die App läuft auf "/" - also die Sitzung auf der Wurzel starten (wie bei einer eigenen Domain)
         return redirect_to("/", cookie)
@@ -360,15 +502,18 @@ def resolve_anonymous(raw_uri, cookie_header, client_ip=""):
     tools = load_tools()
     if len(segments) > 1 and segments[1] == "s":
         return resolve_share_path(raw_path, suffix, segments, tools, cookie_header, client_ip)
-    _, share, tool = find_share(parse_cookie(cookie_header, SHARE_COOKIE), tools)
-    if not share or not share_session_mode(tool):
+    token = session_token(cookie_header)
+    _, share, tool = find_share(token, tools)
+    if not share or not share_session_mode(tool) or not session_ok(cookie_header, token, share):
         return None
     if not tool_enabled(tool):
         return maintenance()
+    if share_access(share, client_ip):
+        return result(SHARE_BLOCKED_TARGET)
     return result(tool["upstream"] + raw_path + suffix)
 
 
-def resolve_subdomain(raw_uri, groups, host):
+def resolve_subdomain(raw_uri, groups, host, mfa=False):
     """Zugriff über <slug>.TOOLS_DOMAIN: das ganze Host-Verzeichnis gehört dem Tool (kein Pfad-Präfix)."""
     cleaned = clean_uri(raw_uri)
     host = host.split(":")[0].lower()
@@ -383,12 +528,14 @@ def resolve_subdomain(raw_uri, groups, host):
         return None
     if not tool_enabled(tool) and not is_admin(groups):
         return maintenance()
+    if tool.get("require_mfa") and not mfa:
+        return result(MFA_TARGET)
     if tool.get("type", "static") == "proxy":
-        return result(tool["upstream"] + raw_path + suffix)
-    return result(STATIC_UPSTREAM + "/" + slug + raw_path + suffix, ("/" + slug + "/", "/"))
+        return result(tool["upstream"] + raw_path + suffix, slug=slug)
+    return result(STATIC_UPSTREAM + "/" + slug + raw_path + suffix, ("/" + slug + "/", "/"), slug=slug)
 
 
-def resolve_request(raw_uri, groups, referer="", host="", cookie_header="", client_ip=""):
+def resolve_request(raw_uri, groups, referer="", host="", cookie_header="", client_ip="", mfa=False):
     """Entscheidet über einen Zugriff angemeldeter Nutzer und liefert das Ziel für nginx.
 
     raw_uri ist $request_uri von nginx (Pfad + Query, so wie der Client ihn geschickt hat).
@@ -417,6 +564,8 @@ def resolve_request(raw_uri, groups, referer="", host="", cookie_header="", clie
             return None
         if not tool_enabled(tool) and not is_admin(groups):
             return maintenance()
+        if tool.get("require_mfa") and not mfa:
+            return result(MFA_TARGET)
         if raw_path == prefix:  # /name -> /name/ (relative Links brauchen den Schrägstrich)
             return redirect_to(prefix + "/")
         if tool.get("type", "static") == "proxy":
@@ -426,8 +575,8 @@ def resolve_request(raw_uri, groups, referer="", host="", cookie_header="", clie
             if strip and parse_cookie(cookie_header, COOKIE_NAME) != slug:
                 cookie = f"{COOKIE_NAME}={slug}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Lax"
             return result(tool["upstream"] + (rest or "/") + suffix,
-                          ("/", prefix + "/") if strip else NO_REDIRECT, cookie)
-        return result(STATIC_UPSTREAM + raw_path + suffix)
+                          ("/", prefix + "/") if strip else NO_REDIRECT, cookie, slug=slug)
+        return result(STATIC_UPSTREAM + raw_path + suffix, slug=slug)
 
     # Unbekannter erster Pfadteil: Viele Apps rufen absolute Pfade wie /api/x oder /static/app.js auf.
     # Dann das zuletzt benutzte Tool nehmen - erst nach Referer, dann nach Merk-Cookie.
@@ -444,7 +593,9 @@ def resolve_request(raw_uri, groups, referer="", host="", cookie_header="", clie
         if t and t.get("type") == "proxy" and t.get("strip_prefix", True) and can_see(t, groups):
             if not tool_enabled(t) and not is_admin(groups):
                 return maintenance()
-            return result(t["upstream"] + raw_path + suffix, ("/", "/" + cand + "/"))
+            if t.get("require_mfa") and not mfa:
+                return result(MFA_TARGET)
+            return result(t["upstream"] + raw_path + suffix, ("/", "/" + cand + "/"), slug=cand)
     return None
 
 
@@ -464,12 +615,34 @@ def ensure_site_dir(slug, name):
         )
 
 
+def load_health():
+    try:
+        return json.loads(HEALTH_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+GATE_PAGE = """<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>Geschützter Link</title><style>
+body{{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#f6f7f9;color:#14181f;margin:0;min-height:100vh;display:grid;place-items:center}}
+@media (prefers-color-scheme:dark){{body{{background:#0d1017;color:#e9ecf2}}.box{{background:#151a23!important;border-color:#262d3a!important}}input{{background:#0d1017!important;color:#e9ecf2!important;border-color:#262d3a!important}}}}
+.box{{background:#fff;border:1px solid #e2e5eb;border-radius:16px;padding:28px;width:min(360px,calc(100vw - 32px));box-sizing:border-box}}
+h1{{font-size:1.2rem;margin:0 0 6px}}p{{color:#5d6676;margin:0 0 16px;font-size:.95rem}}
+input{{width:100%;box-sizing:border-box;padding:11px 12px;border:1px solid #e2e5eb;border-radius:10px;font:inherit;margin-bottom:12px}}
+button{{width:100%;padding:11px;border:0;border-radius:10px;background:#3b5bdb;color:#fff;font:inherit;font-weight:600;cursor:pointer}}
+.err{{color:#c92a2a;font-size:.9rem;margin:-4px 0 12px}}</style></head><body>
+<form class="box" method="post" autocomplete="off"><h1>🔒 Geschützter Link</h1><p>Bitte gib die PIN bzw. das Passwort ein, das du zusammen mit dem Link bekommen hast.</p>
+{error}<input type="password" name="pin" aria-label="PIN oder Passwort" autofocus required maxlength="64">
+<button type="submit">Öffnen</button></form></body></html>"""
+
+
 def share_info(key, share, tools, now):
     return {
         "id": key[:12], "tool": share["tool"], "toolName": tools.get(share["tool"], {}).get("name", share["tool"]),
         "label": share.get("label", ""), "created": share["created"], "expires": share["expires"],
         "createdBy": share.get("created_by", ""), "uses": share.get("uses", 0), "maxUses": share.get("max_uses"),
-        "lastUsed": share.get("last_used"),
+        "lastUsed": share.get("last_used"), "hasPin": bool(share.get("pin")), "ips": share.get("ips", []),
+        "schedule": share.get("schedule"), "locked": share.get("locked_until", 0) > now,
         "active": share["expires"] > now and share["tool"] in tools
                   and not (share.get("max_uses") and share.get("uses", 0) >= share["max_uses"]),
     }
@@ -491,6 +664,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def client_ip(self):
         return self.headers.get("X-Real-IP", "")[:64]
+
+    def mfa(self):
+        # Von Authentik per Property-Mapping gesetzt (siehe README), vom NPM durchgereicht
+        return self.headers.get("X-Authentik-Mfa", "").strip().lower() in ("1", "true", "yes")
 
     def send_json(self, status, payload=None, extra=None):
         body = json.dumps(payload if payload is not None else {}, ensure_ascii=False).encode()
@@ -515,12 +692,25 @@ class Handler(BaseHTTPRequestHandler):
         if fetch_site and fetch_site != "same-origin":
             raise PermissionError("Anfrage nicht von dieser Seite")
 
-    def read_body(self):
+    def send_html(self, status, page, extra=None):
+        body = page.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Security-Policy",
+                         "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def read_body(self, max_bytes=MAX_BODY):
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             raise ValueError("Content-Type muss application/json sein")
         self.check_same_origin()
         length = int(self.headers.get("Content-Length") or 0)
-        if length > MAX_BODY:
+        if length > max_bytes:
             raise ValueError("Anfrage zu groß")
         data = json.loads(self.rfile.read(length) or b"{}")
         if not isinstance(data, dict):
@@ -533,6 +723,10 @@ class Handler(BaseHTTPRequestHandler):
         path = url.path
         if method == "GET" and path == "/healthz":
             return self.send_json(200, {"ok": True})
+        if path.startswith("/_gate/"):
+            # PIN-Abfrage für Freigabe-Links. tools-web leitet nur hierher, wenn das Backend selbst
+            # (in /authz) dieses Ziel vorgegeben hat; das Geheimnis wird an Tools nie weitergegeben.
+            return self.share_gate(method, path[len("/_gate/"):])
         if not secret_ok(self.headers.get("X-Tools-Secret", "")):
             return self.send_json(403, {"error": "Anfrage nicht über den Proxy gekommen"})
         username, groups = self.user()
@@ -546,11 +740,15 @@ class Handler(BaseHTTPRequestHandler):
                 # Gäste: nur Freigabe-Links und Freigabe-Sitzungen, und nur auf der Haupt-Domain
                 res = resolve_anonymous(raw_uri, cookies, self.client_ip()) if mode == "path" else None
             elif mode == "subdomain":
-                res = resolve_subdomain(raw_uri, groups, self.headers.get("Host", ""))
+                res = resolve_subdomain(raw_uri, groups, self.headers.get("Host", ""), mfa=self.mfa())
             else:
                 res = resolve_request(raw_uri, groups, referer=self.headers.get("Referer", ""),
                                       host=self.headers.get("Host", ""), cookie_header=cookies,
-                                      client_ip=self.client_ip())
+                                      client_ip=self.client_ip(), mfa=self.mfa())
+            # Nutzung zählen: nur echte Seitenaufrufe (Navigation), nicht jede Datei/API-Anfrage
+            if (res and username and res.get("slug") and self.headers.get("Sec-Fetch-Mode") == "navigate"
+                    and self.headers.get("Sec-Fetch-Dest", "document") == "document"):
+                STATS.record_visit(username, res["slug"])
             if not res:
                 # Gäste: 401 -> der NPM schickt zum Login. Ungültiger Freigabe-Link: 403 -> Seite "Kein Zugriff".
                 return self.send_json(401 if not username and not raw_uri.startswith("/s/") else 403)
@@ -570,12 +768,28 @@ class Handler(BaseHTTPRequestHandler):
                 "name": self.headers.get("X-Authentik-Name", "") or username,
                 "isAdmin": is_admin(groups),
                 "toolsDomain": TOOLS_DOMAIN,
+                "mfa": self.mfa(),
+                **STATS.prefs(username),
             })
+        if method == "PUT" and path == "/api/me/favorites":
+            try:
+                body = self.read_body()
+                favs = body.get("favorites")
+                if not isinstance(favs, list) or any(not isinstance(f, str) or not SLUG_RE.match(f) for f in favs):
+                    raise ValueError("Ungültige Favoriten")
+            except PermissionError as e:
+                return self.send_json(403, {"error": str(e)})
+            except (ValueError, json.JSONDecodeError) as e:
+                return self.send_json(400, {"error": str(e)})
+            STATS.set_favorites(username, list(dict.fromkeys(favs)))
+            return self.send_json(200, STATS.prefs(username))
         if method == "GET" and path == "/api/tools":
             admin = is_admin(groups)
+            health = load_health().get("tools", {})
             tools = [
                 {"slug": s, "name": t["name"], "description": t["description"], "icon": t["icon"],
-                 "category": t.get("category", ""), "enabled": tool_enabled(t), "url": tool_url(s, t)}
+                 "category": t.get("category", ""), "enabled": tool_enabled(t), "url": tool_url(s, t),
+                 "health": health.get(s, {}).get("state"), "requireMfa": bool(t.get("require_mfa"))}
                 for s, t in sorted(load_tools().items(), key=lambda kv: kv[1]["name"].lower())
                 if can_see(t, groups) and (tool_enabled(t) or admin)
             ]
@@ -602,6 +816,26 @@ class Handler(BaseHTTPRequestHandler):
             return self.admin_tools(method, item, actor)
         if area == "shares":
             return self.admin_shares(method, item, actor)
+        if area == "files" and item:
+            return self.admin_files(method, item, query, actor)
+        if area == "stats" and method == "GET" and item is None:
+            days = parse_qs(query).get("days", ["30"])[0]
+            return self.send_json(200, STATS.summary(min(max(int(days) if days.isdigit() else 30, 1), 90)))
+        if area == "health" and method == "GET" and item is None:
+            data = load_health()
+            try:
+                data["test"] = json.loads((STATUS_DIR / "test-result.json").read_text(encoding="utf-8"))
+            except (FileNotFoundError, ValueError):
+                data["test"] = None
+            return self.send_json(200, data)
+        if area == "notify-test" and method == "POST" and item is None:
+            self.check_same_origin()
+            STATUS_DIR.mkdir(parents=True, exist_ok=True)
+            (STATUS_DIR / "test-notify").write_text(str(time.time()), encoding="utf-8")
+            audit("notify.test", actor)
+            return self.send_json(202, {"ok": True})
+        if area == "import" and method == "POST" and item is None:
+            return self.admin_import(actor)
         if area == "audit" and method == "GET" and item is None:
             limit = parse_qs(query).get("limit", ["200"])[0]
             return self.send_json(200, read_audit(min(max(int(limit) if limit.isdigit() else 200, 1), 1000)))
@@ -675,6 +909,9 @@ class Handler(BaseHTTPRequestHandler):
             label = clean_text(body.get("label", ""), "Bezeichnung", 60)
             expires = validate_expiry(body, now)
             max_uses = validate_max_uses(body)
+            pin = validate_pin(body["pin"]) if body.get("pin") else None
+            ips = validate_ips(body.get("ips"))
+            schedule = validate_schedule(body.get("schedule"))
             token = secrets.token_urlsafe(32)
             with _lock:
                 # Abgelaufene Links nach 7 Tagen aufräumen
@@ -684,10 +921,11 @@ class Handler(BaseHTTPRequestHandler):
                 shares[hash_token(token)] = {
                     "tool": tool_slug, "label": label, "created": now, "expires": expires,
                     "created_by": actor, "max_uses": max_uses, "uses": 0,
+                    "pin": pin, "ips": ips, "schedule": schedule, "nonce": secrets.token_hex(8),
                 }
                 save_shares(shares)
             audit("share.create", actor, share=hash_token(token)[:12], tool=tool_slug, expires=expires,
-                  max_uses=max_uses)
+                  max_uses=max_uses, pin=bool(pin), ips=ips, schedule=schedule)
             # Der Token wird nur hier einmal ausgegeben; gespeichert ist nur sein Hash
             return self.send_json(201, {"id": hash_token(token)[:12], "path": f"/s/{token}/", "expires": expires,
                                         "sessionMode": share_session_mode(tools[tool_slug])})
@@ -705,8 +943,20 @@ class Handler(BaseHTTPRequestHandler):
                     share["expires"] = validate_expiry(body, now)
                 if "max_uses" in body:
                     share["max_uses"] = validate_max_uses(body)
+                if body.get("pin"):
+                    share["pin"] = validate_pin(body["pin"])
+                    share["nonce"] = secrets.token_hex(8)  # neue PIN: laufende Sitzungen beenden
+                elif body.get("remove_pin"):
+                    share["pin"] = None
+                if "ips" in body:
+                    share["ips"] = validate_ips(body["ips"])
+                if "schedule" in body:
+                    share["schedule"] = validate_schedule(body["schedule"])
+                if body.get("unlock"):
+                    share["fails"], share["locked_until"] = 0, 0
                 save_shares(shares)
-            audit("share.update", actor, share=share_id, expires=share["expires"], max_uses=share.get("max_uses"))
+            audit("share.update", actor, share=share_id, expires=share["expires"], max_uses=share.get("max_uses"),
+                  pin=bool(share.get("pin")), ips=share.get("ips", []), schedule=share.get("schedule"))
             return self.send_json(200, share_info(match[0], share, load_tools(), now))
         if method == "DELETE" and share_id:
             self.check_same_origin()
@@ -721,6 +971,127 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"ok": True})
         return self.send_json(405, {"error": "Methode nicht erlaubt"})
 
+    # --- PIN-Abfrage für Freigabe-Links
+    def share_gate(self, method, token):
+        tools = load_tools()
+        key, share, tool = find_share(token, tools)
+        if not share or not share.get("pin"):
+            return self.send_html(403, GATE_PAGE.format(error='<p class="err">Dieser Link ist ungültig oder abgelaufen.</p>'))
+        ip = self.client_ip()
+        if not tool_enabled(tool) or share_access(share, ip):
+            return self.send_html(403, GATE_PAGE.format(error='<p class="err">Dieser Link ist gerade nicht freigegeben.</p>'))
+        now = time.time()
+        if method != "POST":
+            return self.send_html(200, GATE_PAGE.format(error=""))
+        try:
+            self.check_same_origin()
+        except PermissionError:
+            return self.send_html(403, GATE_PAGE.format(error='<p class="err">Ungültige Anfrage.</p>'))
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > 2048:
+            return self.send_html(413, GATE_PAGE.format(error='<p class="err">Eingabe zu lang.</p>'))
+        pin = parse_qs(self.rfile.read(length).decode("utf-8", "replace")).get("pin", [""])[0]
+        with _lock:
+            shares = load_shares()
+            current = shares.get(key)
+            if not current:
+                return self.send_html(403, GATE_PAGE.format(error='<p class="err">Dieser Link ist ungültig oder abgelaufen.</p>'))
+            if current.get("locked_until", 0) > now:
+                minutes = int((current["locked_until"] - now) // 60) + 1
+                return self.send_html(429, GATE_PAGE.format(
+                    error=f'<p class="err">Zu viele Fehlversuche. Bitte in {minutes} Min. erneut versuchen.</p>'))
+            ok = PIN_MIN <= len(pin) <= PIN_MAX and check_pin(pin, current["pin"])
+            if not ok:
+                current["fails"] = current.get("fails", 0) + 1
+                if current["fails"] >= PIN_MAX_FAILS:
+                    current["locked_until"], current["fails"] = now + PIN_LOCK_SECONDS, 0
+                save_shares(shares)
+        if not ok:
+            audit("share.pin_failed", "", share=key[:12], tool=share["tool"], ip=ip)
+            return self.send_html(403, GATE_PAGE.format(error='<p class="err">Falsche PIN.</p>'))
+        if current.get("fails"):
+            with _lock:
+                shares = load_shares()
+                if key in shares:
+                    shares[key]["fails"] = 0
+                    save_shares(shares)
+        if not open_share(key, ip):
+            return self.send_html(403, GATE_PAGE.format(error='<p class="err">Dieser Link wurde bereits so oft geöffnet wie erlaubt.</p>'))
+        location = "/" if share_session_mode(tool) else "/s/" + token + "/"
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Set-Cookie", share_cookie(token, share))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    # --- Import einer exportierten Konfiguration
+    def admin_import(self, actor):
+        body = self.read_body(MAX_IMPORT)
+        incoming = body.get("tools")
+        mode = body.get("mode", "merge")
+        if mode not in ("merge", "replace"):
+            raise ValueError("mode muss 'merge' oder 'replace' sein")
+        if not isinstance(incoming, dict) or not incoming:
+            raise ValueError("Keine Tools in der Datei")
+        if len(incoming) > 500:
+            raise ValueError("Zu viele Tools (max. 500)")
+        clean = {}
+        for slug, tool in incoming.items():
+            if not isinstance(slug, str) or not SLUG_RE.match(slug) or slug in RESERVED_SLUGS:
+                raise ValueError(f"Ungültiger Kurzname: {slug!r}")
+            if not isinstance(tool, dict):
+                raise ValueError(f"Ungültiger Eintrag: {slug}")
+            try:
+                clean[slug] = validate_tool(tool)
+            except ValueError as e:
+                raise ValueError(f"{slug}: {e}")
+        with _lock:
+            tools = {} if mode == "replace" else load_tools()
+            added = sum(1 for s in clean if s not in tools)
+            tools.update(clean)
+            for slug, tool in clean.items():
+                if tool["type"] == "static":
+                    ensure_site_dir(slug, tool["name"])
+            save_tools(tools)
+        audit("config.import", actor, mode=mode, tools=sorted(clean), added=added)
+        return self.send_json(200, {"imported": len(clean), "added": added, "updated": len(clean) - added, "mode": mode})
+
+    # --- Dateien von Dateien-Tools
+    def admin_files(self, method, slug, query, actor):
+        tool = load_tools().get(slug)
+        if not tool:
+            return self.send_json(404, {"error": "Tool nicht gefunden"})
+        if tool.get("type", "static") != "static":
+            raise ValueError("Dateien gibt es nur bei Dateien-Tools")
+        base = filestore.tool_dir(SITES_DIR, slug)
+        q = parse_qs(query)
+        rel = q.get("path", [""])[0]
+        if method == "GET":
+            entries, truncated = filestore.list_files(base)
+            return self.send_json(200, {"files": entries, "truncated": truncated,
+                                        "maxUpload": filestore.MAX_UPLOAD})
+        if method == "POST":
+            self.check_same_origin()
+            length = int(self.headers.get("Content-Length") or 0)
+            unzip = q.get("unzip", ["0"])[0] == "1"
+            try:
+                count = filestore.save_upload(base, rel, self.rfile, length, unzip=unzip)
+            except ValueError:
+                self.close_connection = True  # Rest des Uploads nicht mehr lesen
+                raise
+            audit("files.upload", actor, tool=slug, path=rel, unzip=unzip, files=count)
+            return self.send_json(201, {"written": count})
+        if method == "DELETE":
+            self.check_same_origin()
+            try:
+                filestore.delete_path(base, rel)
+            except FileNotFoundError as e:
+                return self.send_json(404, {"error": str(e)})
+            audit("files.delete", actor, tool=slug, path=rel)
+            return self.send_json(200, {"ok": True})
+        return self.send_json(405, {"error": "Methode nicht erlaubt"})
+
     def do_GET(self): self.handle_request("GET")
     def do_POST(self): self.handle_request("POST")
     def do_PUT(self): self.handle_request("PUT")
@@ -728,4 +1099,5 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    STATS.start_flusher()
     ThreadingHTTPServer(("0.0.0.0", 8000), Handler).serve_forever()

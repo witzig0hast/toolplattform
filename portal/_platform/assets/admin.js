@@ -32,6 +32,8 @@ async function load() {
   try {
     const tools = await api('GET', '/_platform/api/admin/tools');
     toolsCache = tools;
+    const cats = [...new Set(tools.map(t => t.category).filter(Boolean))].sort();
+    $('cat-list').replaceChildren(...cats.map(c => { const o = el('option'); o.value = c; return o; }));
     list.replaceChildren();
     if (!tools.length) {
       list.append(el('div', 'table-empty', 'Noch keine Tools angelegt. Mit „Neues Tool“ geht es los.'));
@@ -44,7 +46,8 @@ async function load() {
       const info = el('div', 't');
       const name = el('strong', '', t.name);
       if (t.type === 'proxy') name.append(el('span', 'chip-proxy', 'Proxy'));
-      info.append(name, el('span', '', t.description || 'Keine Beschreibung'));
+      if (t.enabled === false) name.append(el('span', 'chip-maint', 'Wartung'));
+      info.append(name, el('span', '', [t.category, t.description || 'Keine Beschreibung'].filter(Boolean).join(' · ')));
       cell.append(tile(t), info);
 
       const path = el('div', 'pathcell');
@@ -87,6 +90,8 @@ function openDialog(t) {
   $('f-desc').value = t ? t.description : '';
   $('f-icon').value = t ? t.icon : '';
   $('f-group').value = t ? t.group : '';
+  $('f-cat').value = t ? (t.category || '') : '';
+  $('f-maint').checked = !!t && t.enabled === false;
   const access = t && t.access === 'subdomain' ? 'subdomain' : 'path';
   document.querySelector(`input[name=access][value=${access}]`).checked = true;
   const kind = t && t.type === 'proxy' ? 'proxy' : 'static';
@@ -147,7 +152,10 @@ form.addEventListener('submit', async ev => {
   save.disabled = true;
   const type = document.querySelector('input[name=type]:checked').value;
   const access = document.querySelector('input[name=access]:checked').value;
-  const body = { name: $('f-name').value, description: $('f-desc').value, icon: $('f-icon').value, group: $('f-group').value, type, access };
+  const body = {
+    name: $('f-name').value, description: $('f-desc').value, icon: $('f-icon').value, group: $('f-group').value,
+    category: $('f-cat').value, enabled: !$('f-maint').checked, type, access,
+  };
   if (type === 'proxy') { body.upstream = $('f-upstream').value.trim(); body.strip_prefix = $('f-strip').checked; }
   try {
     if (editing) await api('PUT', '/_platform/api/admin/tools/' + encodeURIComponent(editing), body);
@@ -155,6 +163,7 @@ form.addEventListener('submit', async ev => {
     dlg.close();
     toast(editing ? 'Änderungen gespeichert' : 'Tool angelegt');
     load();
+    loadAudit();
   } catch (e) {
     $('dlg-error').textContent = e.message;
     $('dlg-error').hidden = false;
@@ -189,18 +198,25 @@ async function loadShares() {
       a.append(el('strong', '', sh.toolName), el('div', 'sub', '/' + sh.tool + '/ · von ' + (sh.createdBy || '?')));
       const b = el('div', '', sh.label || '–');
       const c = el('div');
-      const st = el('span', 'status' + (sh.active ? '' : ' off'), sh.active ? remaining(sh.expires) : 'abgelaufen');
-      c.append(st, el('div', 'sub', when(sh.expires)));
+      const used = sh.maxUses && sh.uses >= sh.maxUses;
+      const state = sh.active ? remaining(sh.expires) : (used && sh.expires > Date.now() / 1000 ? 'aufgebraucht' : 'abgelaufen');
+      c.append(el('span', 'status' + (sh.active ? '' : ' off'), state), el('div', 'sub', when(sh.expires)));
+      const u = el('div');
+      u.append(el('span', '', sh.uses + '× geöffnet' + (sh.maxUses ? ' (max. ' + sh.maxUses + ')' : '')),
+               el('div', 'sub', sh.lastUsed ? 'zuletzt ' + when(sh.lastUsed) : 'noch nie geöffnet'));
       const d = el('div', 'tactions');
+      const chg = el('button', 'btn sm', 'Ändern');
+      chg.type = 'button';
+      chg.onclick = () => openShare(sh.tool, sh);
       const rev = el('button', 'btn sm danger', 'Widerrufen');
       rev.type = 'button';
       rev.onclick = () => confirmDialog('Freigabe-Link widerrufen?',
         'Der Link funktioniert danach sofort nicht mehr.', 'Widerrufen', async () => {
-          try { await api('DELETE', '/_platform/api/admin/shares/' + encodeURIComponent(sh.id)); toast('Link widerrufen'); loadShares(); }
+          try { await api('DELETE', '/_platform/api/admin/shares/' + encodeURIComponent(sh.id)); toast('Link widerrufen'); loadShares(); loadAudit(); }
           catch (e) { $('share-error').textContent = e.message; $('share-error').hidden = false; }
         });
-      d.append(rev);
-      row.append(a, b, c, d);
+      d.append(chg, rev);
+      row.append(a, b, c, u, d);
       list.append(row);
     }
   } catch (e) { $('share-error').textContent = e.message; $('share-error').hidden = false; }
@@ -235,7 +251,13 @@ for (const id of ['s-dur', 's-num', 's-unit', 's-date']) {
   $(id).addEventListener('change', syncShareDuration);
 }
 
-function openShare(slug) {
+let editingShare = null; // beim Ändern: der bestehende Link
+
+function openShare(slug, share) {
+  editingShare = share || null;
+  $('share-title').textContent = share ? 'Freigabe-Link ändern' : 'Freigabe-Link erstellen';
+  $('share-save').textContent = share ? 'Speichern' : 'Link erstellen';
+  $('s-tool-row').hidden = !!share;
   const sel = $('s-tool');
   sel.replaceChildren();
   for (const t of toolsCache) {
@@ -245,7 +267,8 @@ function openShare(slug) {
   }
   if (!toolsCache.length) { showError('Lege zuerst ein Tool an.'); return; }
   if (slug) sel.value = slug;
-  $('s-label').value = '';
+  $('s-label').value = share ? share.label : '';
+  $('s-max').value = share && share.maxUses ? share.maxUses : '';
   $('s-dur').value = '86400';
   const soon = new Date(Date.now() + 86400000 - new Date().getTimezoneOffset() * 60000);
   $('s-date').value = soon.toISOString().slice(0, 16);
@@ -266,17 +289,31 @@ $('form-share').addEventListener('submit', async ev => {
     $('share-dlg-error').hidden = false;
     return;
   }
+  const max = $('s-max').value.trim();
+  const maxUses = max ? parseInt(max, 10) : null;
+  if (max && !(maxUses >= 1)) {
+    $('share-dlg-error').textContent = 'Maximale Öffnungen: leer lassen oder eine Zahl ab 1.';
+    $('share-dlg-error').hidden = false;
+    return;
+  }
   btn.disabled = true;
   try {
-    const res = await api('POST', '/_platform/api/admin/shares', {
-      tool: $('s-tool').value, label: $('s-label').value, ...expiry,
-    });
-    $('dlg-share').close();
-    $('link-url').value = location.origin + res.path;
-    $('link-expiry').textContent = 'Gültig bis ' + when(res.expires) + '.';
-    $('dlg-link').showModal();
-    $('link-url').select();
+    const body = { label: $('s-label').value, max_uses: maxUses, ...expiry };
+    if (editingShare) {
+      await api('PUT', '/_platform/api/admin/shares/' + encodeURIComponent(editingShare.id), body);
+      $('dlg-share').close();
+      toast('Freigabe-Link geändert');
+    } else {
+      const res = await api('POST', '/_platform/api/admin/shares', { tool: $('s-tool').value, ...body });
+      $('dlg-share').close();
+      $('link-url').value = location.origin + res.path;
+      $('link-expiry').textContent = 'Gültig bis ' + when(res.expires) + '.' + (maxUses ? ' Höchstens ' + maxUses + '× zu öffnen.' : '');
+      $('link-session').hidden = !res.sessionMode;
+      $('dlg-link').showModal();
+      $('link-url').select();
+    }
     loadShares();
+    loadAudit();
   } catch (e) {
     $('share-dlg-error').textContent = e.message;
     $('share-dlg-error').hidden = false;
@@ -287,6 +324,54 @@ $('link-copy').onclick = async () => {
   const input = $('link-url');
   try { await navigator.clipboard.writeText(input.value); toast('Link kopiert'); }
   catch (e) { input.select(); document.execCommand('copy'); toast('Link kopiert'); }
+};
+
+// ---------- Protokoll ----------
+const ACTIONS = {
+  'tool.create': e => ['Tool angelegt', '/' + e.tool + '/ · Gruppe ' + e.group + (e.upstream ? ' · → ' + e.upstream : '')],
+  'tool.update': e => ['Tool geändert', '/' + e.tool + '/ · ' + (e.changed || []).join(', ')],
+  'tool.delete': e => ['Tool entfernt', '/' + e.tool + '/'],
+  'share.create': e => ['Freigabe-Link erstellt', e.tool + ' · bis ' + when(e.expires) + (e.max_uses ? ' · max. ' + e.max_uses + '×' : '')],
+  'share.update': e => ['Freigabe-Link geändert', 'Link ' + e.share + ' · bis ' + when(e.expires)],
+  'share.revoke': e => ['Freigabe-Link widerrufen', e.tool + ' · Link ' + e.share],
+  'share.open': e => ['Freigabe-Link geöffnet', e.tool + ' · ' + (e.ip || 'IP unbekannt') + ' · ' + e.uses + '. Öffnung'],
+  'share.blocked': e => ['Freigabe-Link abgewiesen', e.tool + ' · ' + (e.ip || 'IP unbekannt') + ' · Limit erreicht'],
+  'config.export': () => ['Konfiguration exportiert', ''],
+};
+
+async function loadAudit() {
+  const list = $('audit-list');
+  $('audit-error').hidden = true;
+  try {
+    const entries = await api('GET', '/_platform/api/admin/audit?limit=150');
+    list.replaceChildren();
+    if (!entries.length) { list.append(el('div', 'table-empty', 'Noch keine Einträge.')); return; }
+    for (const e of entries) {
+      const [title, detail] = (ACTIONS[e.action] || (() => [e.action, '']))(e);
+      const row = el('div', 'arow');
+      const what = el('div', 'what');
+      what.append(el('strong', '', title));
+      if (detail) what.append(el('div', 'sub', detail));
+      row.append(el('span', 'when', when(e.ts)), el('span', '', e.actor || 'Gast'), what);
+      list.append(row);
+    }
+  } catch (e) { $('audit-error').textContent = e.message; $('audit-error').hidden = false; }
+}
+$('audit-reload').onclick = () => { loadAudit(); loadShares(); };
+
+$('export').onclick = async () => {
+  try {
+    const data = await api('GET', '/_platform/api/admin/export');
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const a = el('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'tools-export-' + new Date().toISOString().slice(0, 10) + '.json';
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    loadAudit();
+  } catch (e) { showError(e.message); }
 };
 
 async function loadDomain() {
@@ -300,3 +385,4 @@ async function loadDomain() {
 loadDomain();
 load();
 loadShares();
+loadAudit();

@@ -69,6 +69,8 @@ class Dev(server.Handler):
         if not res:
             return self.send_error(403)
         target = res["target"]
+        if target == server.MAINTENANCE_TARGET:
+            return self.send_error(503, "Wartung")
         if "/_redirect?to=" in target:
             self.send_response(301)
             self.send_header("Location", target.split("to=", 1)[1])

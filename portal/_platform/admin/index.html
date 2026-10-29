@@ -52,9 +52,26 @@
   </section>
   <p id="share-error" class="alert" role="alert" hidden></p>
   <div class="panel">
-    <div class="table-head shares"><span>Tool</span><span>Bezeichnung</span><span>Läuft ab</span><span></span></div>
+    <div class="table-head shares"><span>Tool</span><span>Bezeichnung</span><span>Läuft ab</span><span>Öffnungen</span><span></span></div>
     <div id="share-list"></div>
   </div>
+
+  <section class="hero row-between section-gap">
+    <div>
+      <h2>Protokoll</h2>
+      <p class="muted">Wer hat wann was geändert, und wann wurden Freigabe-Links geöffnet (mit IP-Adresse).</p>
+    </div>
+    <div class="btnrow">
+      <button id="audit-reload" class="btn" type="button">Aktualisieren</button>
+      <button id="export" class="btn" type="button">Konfiguration exportieren</button>
+    </div>
+  </section>
+  <p id="audit-error" class="alert" role="alert" hidden></p>
+  <div class="panel">
+    <div class="table-head audit"><span>Zeit</span><span>Wer</span><span>Was</span></div>
+    <div id="audit-list"></div>
+  </div>
+  <p class="hint">Gespeichert in <code>data/audit.log</code> auf dem Server.</p>
 </main>
 
 <dialog id="dlg">
@@ -70,6 +87,11 @@
       </label>
       <label>Beschreibung
         <input id="f-desc" maxlength="200" placeholder="Wofür ist das Tool?">
+      </label>
+      <label>Kategorie <span class="opt">optional</span>
+        <input id="f-cat" maxlength="40" list="cat-list" placeholder="z. B. Smart Home, Server, Finanzen">
+        <datalist id="cat-list"></datalist>
+        <small>Tools mit gleicher Kategorie stehen im Portal zusammen.</small>
       </label>
       <div class="lbl">Art des Tools</div>
       <div class="seg" role="radiogroup" aria-label="Art des Tools">
@@ -97,6 +119,7 @@
           <input id="f-group" required maxlength="64" placeholder="tool-home-assistant-fix">
         </label>
       </div>
+      <label class="check"><input type="checkbox" id="f-maint"><span>Wartungsmodus<small>Tool vorübergehend sperren. Nutzer und Freigabe-Links sehen eine Wartungsseite, Admins kommen weiter hinein.</small></span></label>
       <p id="dlg-error" class="alert" role="alert" hidden></p>
     </div>
     <footer class="dlg-foot">
@@ -118,9 +141,9 @@
 </dialog>
 <dialog id="dlg-share">
   <form id="form-share" method="dialog" autocomplete="off">
-    <header class="dlg-head"><h2>Freigabe-Link erstellen</h2></header>
+    <header class="dlg-head"><h2 id="share-title">Freigabe-Link erstellen</h2></header>
     <div class="dlg-body">
-      <label>Tool
+      <label id="s-tool-row">Tool
         <select id="s-tool" required></select>
       </label>
       <label>Bezeichnung <span class="opt">optional</span>
@@ -156,6 +179,10 @@
         </label>
       </div>
       <p class="muted" id="s-preview"></p>
+      <label>Maximale Öffnungen <span class="opt">optional</span>
+        <input id="s-max" type="number" min="1" step="1" placeholder="unbegrenzt">
+        <small>Wie viele verschiedene Browser den Link öffnen dürfen. <strong>1 = Einmal-Link.</strong> Wer ihn schon offen hat, kann weiterarbeiten.</small>
+      </label>
       <p id="share-dlg-error" class="alert" role="alert" hidden></p>
     </div>
     <footer class="dlg-foot">
@@ -175,6 +202,7 @@
         <button class="btn primary" type="button" id="link-copy">Kopieren</button>
       </div>
       <p class="muted" id="link-expiry"></p>
+      <p class="muted" id="link-session" hidden>Hinweis: Gäste nutzen die App danach direkt unter der Hauptadresse (z. B. <code>/</code>), damit auch Apps mit absoluten Pfaden funktionieren. Zum Testen ein privates Fenster nehmen, in dem du nicht angemeldet bist.</p>
     </div>
     <footer class="dlg-foot"><button class="btn">Fertig</button></footer>
   </form>

@@ -158,6 +158,8 @@ git pull
 # .env um die neuen Einträge aus .env.example ergänzen (TZ, HEALTH_…, NOTIFY_…)
 docker compose up -d --build
 ```
+Tipp: `sh npm/ausgeben.sh 192.168.1.20:9000` (Adresse deines Authentik) gibt alle drei NPM-Texte fertig ausgefüllt aus – mit dem Geheimnis aus der `.env`. Dann nur noch kopieren und einfügen.
+
 **Die NPM-Snippets haben sich geändert** – alle drei neu einfügen (jeweils `DEIN_TOOLS_SECRET` ersetzen):
 1. Tab *Advanced*: `npm/advanced.conf` (u. a. `recursive_error_pages on;` und der Block `@tools_maybe_share`).
 2. Custom location `/`: `npm/location-root.conf` (u. a. `error_page 401 = @tools_maybe_share;` und weitere Authentik-Header inkl. 2FA).

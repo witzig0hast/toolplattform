@@ -171,6 +171,27 @@ c = http.client.HTTPConnection(*N, timeout=5); c.request("GET", "/", headers={"H
 csp = r.getheader("Content-Security-Policy") or ""
 check("Portal behält die strenge CSP", "default-src 'self'" in csp and "unsafe-inline" not in csp, csp)
 
+print("== Zurück-Knopf zum Portal")
+SPA_APP = open_app(LOGIN, "spa")
+s, _, _, d = req("GET", "/settings", SPA_APP)
+check("HTML-Seite der App bekommt den Zurück-Knopf", s == 200 and b'/_platform/assets/back.js' in d and d.count(b"</body>") == 1, (s, d[-160:]))
+s, _, _, d = req("GET", "/api/data", SPA_APP, {"Sec-Fetch-Mode": "cors"})
+check("JSON der App bleibt unverändert", s == 200 and b"back.js" not in d and app(d).get("ok") is True, d[:80])
+s, _, _, d = req("GET", "/datei-tool/", LOGIN)
+check("Auch Dateien-Tools bekommen den Knopf", b"back.js" in d, d[-120:])
+gsh = share("spa"); gck = req("GET", gsh["path"])[2].split(";")[0]
+s, _, _, d = req("GET", "/", gck)
+check("Gäste mit Freigabe-Link sehen keinen Knopf", s == 200 and b"back.js" not in d and b"<h1" in d, (s, d[-120:]))
+ts = {x["slug"]: x for x in api("GET", "/admin/tools")[1]}
+t2 = {k: v for k, v in ts["spa"].items() if k not in ("slug", "url")}
+t2["back_button"] = False
+api("PUT", "/admin/tools/spa", t2)
+s, _, _, d = req("GET", "/settings", SPA_APP)
+check("Pro Tool abschaltbar", s == 200 and b"back.js" not in d, d[-120:])
+t2["back_button"] = True; api("PUT", "/admin/tools/spa", t2)
+s, _, _, d = req("GET", "/_platform/assets/back.js", LOGIN)
+check("Knopf-Skript wird ausgeliefert", s == 200 and b"Zur\xc3\xbcck zum Portal" in d, s)
+
 print("== Wartungsmodus")
 tools = {t["slug"]: t for t in api("GET", "/admin/tools")[1]}
 t = dict(tools["strom"]); t["enabled"] = False

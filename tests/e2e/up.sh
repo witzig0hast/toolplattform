@@ -7,7 +7,7 @@ H=$(cd "$(dirname "$0")" && pwd); R=$(cd "$H/../.." && pwd); T=${E2E_DIR:-/tmp/t
 for i in 2 3 4 5; do ip addr add 10.99.0.$i/32 dev lo 2>/dev/null || true; done
 "$H/down.sh" 2>/dev/null || true
 rm -rf $T; mkdir -p $T/sites/datei-tool $T/data $T/ngx/logs
-echo '<!doctype html><title>Datei</title><link rel=stylesheet href="style.css"><h1>Datei-Tool</h1>' > $T/sites/datei-tool/index.html
+echo '<!doctype html><html><head><title>Datei</title><link rel=stylesheet href="style.css"></head><body><h1>Datei-Tool</h1></body></html>' > $T/sites/datei-tool/index.html
 echo 'h1{color:green}' > $T/sites/datei-tool/style.css
 python3 - "$T" <<'PY'
 import json, sys

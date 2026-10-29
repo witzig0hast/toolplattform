@@ -221,6 +221,7 @@ def validate_tool(body):
         "access": body.get("access", "path"),
         "enabled": validate_bool(body, "enabled", True),
         "require_mfa": validate_bool(body, "require_mfa", False),
+        "back_button": validate_bool(body, "back_button", True),
     }
     if tool["access"] not in ("path", "subdomain"):
         raise ValueError("Aufruf muss 'path' oder 'subdomain' sein")
@@ -374,8 +375,16 @@ def tool_url(slug, tool):
     return f"/{slug}/"
 
 
-def result(target, redir=NO_REDIRECT, cookie="", slug=""):
-    return {"target": target, "redir": redir, "cookie": cookie, "slug": slug}
+def result(target, redir=NO_REDIRECT, cookie="", slug="", inject=""):
+    return {"target": target, "redir": redir, "cookie": cookie, "slug": slug, "inject": inject}
+
+
+def back_button(tool, subdomain=False):
+    """Kleiner Knopf "zurück zum Portal", der in HTML-Seiten der Tools eingeblendet wird (nur für angemeldete Nutzer)."""
+    if not tool.get("back_button", True):
+        return ""
+    portal = f"https://{TOOLS_DOMAIN}/_platform/portal" if subdomain and TOOLS_DOMAIN else "/_platform/portal"
+    return f'<script src="/_platform/assets/back.js" data-portal="{portal}" defer></script>'
 
 
 def maintenance():
@@ -533,9 +542,10 @@ def resolve_subdomain(raw_uri, groups, host, mfa=False):
         return maintenance()
     if tool.get("require_mfa") and not mfa:
         return result(MFA_TARGET)
+    inject = back_button(tool, subdomain=True)
     if tool.get("type", "static") == "proxy":
-        return result(tool["upstream"] + raw_path + suffix, slug=slug)
-    return result(STATIC_UPSTREAM + "/" + slug + raw_path + suffix, ("/" + slug + "/", "/"), slug=slug)
+        return result(tool["upstream"] + raw_path + suffix, slug=slug, inject=inject)
+    return result(STATIC_UPSTREAM + "/" + slug + raw_path + suffix, ("/" + slug + "/", "/"), slug=slug, inject=inject)
 
 
 def same_host(url, host):
@@ -571,7 +581,7 @@ def app_target(tool, raw_path, suffix, groups, mfa, slug="", last_used=0):
         return result(MFA_TARGET)
     # Sitzung bei Nutzung verlängern (nicht bei jeder Anfrage, nur alle paar Minuten)
     refresh = app_cookie(slug) if slug and time.time() - last_used > APP_REFRESH_SECONDS else ""
-    return result(tool["upstream"] + raw_path + suffix, cookie=refresh)
+    return result(tool["upstream"] + raw_path + suffix, cookie=refresh, inject=back_button(tool))
 
 
 def resolve_request(raw_uri, groups, referer="", host="", cookie_header="", client_ip="", mfa=False, navigate=True):
@@ -636,8 +646,8 @@ def resolve_request(raw_uri, groups, referer="", host="", cookie_header="", clie
         if raw_path == prefix:  # /name -> /name/ (relative Links brauchen den Schrägstrich)
             return redirect_to(prefix + "/")
         if tool.get("type", "static") == "proxy":  # App mit eigener Base-URL /<kurzname>/
-            return result(tool["upstream"] + raw_path + suffix, slug=slug)
-        return result(STATIC_UPSTREAM + raw_path + suffix, slug=slug)
+            return result(tool["upstream"] + raw_path + suffix, slug=slug, inject=back_button(tool))
+        return result(STATIC_UPSTREAM + raw_path + suffix, slug=slug, inject=back_button(tool))
 
     # Jeder andere Pfad (/settings, /api/..., /static/...) gehört der aktiven App
     if cur_ok:
@@ -655,8 +665,9 @@ def ensure_site_dir(slug, name):
     index = folder / "index.html"
     if not index.exists():
         index.write_text(
-            f"<!doctype html><meta charset=utf-8><title>{html.escape(name)}</title>"
-            f"<h1>{html.escape(name)}</h1><p>Lege deine Dateien in sites/{slug}/ ab.</p>\n",
+            f"<!doctype html><html lang=\"de\"><head><meta charset=\"utf-8\"><title>{html.escape(name)}</title></head>"
+            f"<body><h1>{html.escape(name)}</h1><p>Lade die Dateien dieses Tools in der Verwaltung über "
+            f"„Dateien“ hoch (oder lege sie in sites/{slug}/ ab).</p></body></html>\n",
             encoding="utf-8",
         )
 
@@ -813,6 +824,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, extra={
                 "X-Tool-Target": res["target"], "X-Tool-Redir-From": res["redir"][0],
                 "X-Tool-Redir-To": res["redir"][1], "X-Tool-Cookie": res["cookie"],
+                "X-Tool-Inject": res.get("inject", "") if username else "",
             })
 
         if not username:

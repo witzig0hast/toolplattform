@@ -111,6 +111,7 @@ function openDialog(t) {
   $('f-cat').value = t ? (t.category || '') : '';
   $('f-maint').checked = !!t && t.enabled === false;
   $('f-mfa').checked = !!t && !!t.require_mfa;
+  $('f-back').checked = !t || t.back_button !== false;
   const access = t && t.access === 'subdomain' ? 'subdomain' : 'path';
   document.querySelector(`input[name=access][value=${access}]`).checked = true;
   const kind = t && t.type === 'proxy' ? 'proxy' : 'static';
@@ -173,7 +174,7 @@ form.addEventListener('submit', async ev => {
   const access = document.querySelector('input[name=access]:checked').value;
   const body = {
     name: $('f-name').value, description: $('f-desc').value, icon: $('f-icon').value, group: $('f-group').value,
-    category: $('f-cat').value, enabled: !$('f-maint').checked, require_mfa: $('f-mfa').checked, type, access,
+    category: $('f-cat').value, enabled: !$('f-maint').checked, require_mfa: $('f-mfa').checked, back_button: $('f-back').checked, type, access,
   };
   if (type === 'proxy') { body.upstream = $('f-upstream').value.trim(); body.strip_prefix = $('f-strip').checked; }
   try {

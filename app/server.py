@@ -46,6 +46,7 @@ TOOLS_SECRET = os.environ.get("TOOLS_SECRET", "")
 # Interner nginx-Server (nur im Container erreichbar), der die statischen Tool-Dateien ausliefert
 STATIC_UPSTREAM = "http://127.0.0.1:8081"
 MAINTENANCE_TARGET = STATIC_UPSTREAM + "/_maintenance"
+PORTAL_TARGET = STATIC_UPSTREAM + "/_portal"
 MFA_TARGET = STATIC_UPSTREAM + "/_mfa"                    # Seite "2FA erforderlich"
 SHARE_BLOCKED_TARGET = STATIC_UPSTREAM + "/_share_blocked"  # Seite "Link gerade nicht freigegeben"
 # So erreicht tools-web dieses Backend (für die PIN-Abfrage bei Freigabe-Links)
@@ -535,6 +536,39 @@ def resolve_subdomain(raw_uri, groups, host, mfa=False):
     return result(STATIC_UPSTREAM + "/" + slug + raw_path + suffix, ("/" + slug + "/", "/"), slug=slug)
 
 
+def same_host(url, host):
+    """Gehört die URL (Referer) zu unserem Host? Vergleich ohne Port (Proxys geben den Host teils ohne Port weiter)."""
+    ref_host = (urlsplit(url).hostname or "").lower()
+    return bool(ref_host) and ref_host == host.rsplit(":", 1)[0].lower()
+
+
+def root_app(tools, groups, referer, host, cookie_header):
+    """Kam der Klick auf "/" aus einer App, die auf "/" läuft? Dann deren Kurzname, sonst None."""
+    if not referer:
+        return None
+    if not same_host(referer, host):
+        return None
+    ref = urlsplit(referer)
+    first = unquote(ref.path).split("/")[1] if ref.path.count("/") >= 1 else ""
+    if not first or first.startswith("_") or first == "s":
+        return None  # Portal, Verwaltung, Freigabe-Links
+    if first in tools:
+        cand = first                                  # z. B. von /bmvtssg/... auf "Home"
+    else:
+        cand = parse_cookie(cookie_header, COOKIE_NAME)  # z. B. von /settings (absoluter App-Pfad) auf "Home"
+    t = tools.get(cand)
+    if t and t.get("type") == "proxy" and t.get("strip_prefix", True) and can_see(t, groups):
+        return cand
+    return None
+
+
+def resolve_root(tools, groups, referer, host, cookie_header):
+    app = root_app(tools, groups, referer, host, cookie_header)
+    if app:
+        return redirect_to("/" + app + "/")
+    return result(PORTAL_TARGET)
+
+
 def resolve_request(raw_uri, groups, referer="", host="", cookie_header="", client_ip="", mfa=False):
     """Entscheidet über einen Zugriff angemeldeter Nutzer und liefert das Ziel für nginx.
 
@@ -551,6 +585,8 @@ def resolve_request(raw_uri, groups, referer="", host="", cookie_header="", clie
     tools = load_tools()
     slug = segments[1] if len(segments) > 1 else ""
 
+    if raw_path == "/":
+        return resolve_root(tools, groups, referer, host, cookie_header)
     if slug == "s":
         return resolve_share_path(raw_path, suffix, segments, tools, cookie_header, client_ip)
 
@@ -583,7 +619,7 @@ def resolve_request(raw_uri, groups, referer="", host="", cookie_header="", clie
     candidates = []
     if referer:
         ref = urlsplit(referer)
-        if ref.netloc == host:
+        if same_host(referer, host):
             ref_parts = unquote(ref.path).split("/")
             if len(ref_parts) > 1:
                 candidates.append(ref_parts[1])

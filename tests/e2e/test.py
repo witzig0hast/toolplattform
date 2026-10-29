@@ -113,6 +113,21 @@ check("Absoluter Pfad über Referer", s == 200 and app(d).get("app") == "Strom-A
 s, loc, _, d = req("GET", "/", LOGIN + "; " + a)
 check("Angemeldet + Freigabe-Cookie -> trotzdem Portal", s == 200 and b"<title>Tools</title>" in d, s)
 
+print("== Startseite '/': Portal oder zurück in die App")
+s, loc, _, d = req("GET", "/", LOGIN, {"Referer": "http://tools.test/strom/einstellungen"})
+check("'Home' in der App (/strom/...) -> zurück nach /strom/", s == 302 and loc == "/strom/", (s, loc))
+s, loc, _, d = req("GET", "/", LOGIN + "; tools_last=strom", {"Referer": "http://tools.test/settings"})
+check("'Home' von /settings (absoluter App-Pfad) -> zurück nach /strom/", s == 302 and loc == "/strom/", (s, loc))
+s, loc, _, d = req("GET", "/", LOGIN, {"Referer": "http://tools.test/_platform/admin/"})
+check("Aus der Verwaltung -> Portal", s == 200 and b"<title>Tools</title>" in d, s)
+s, loc, _, d = req("GET", "/", LOGIN, {"Referer": "http://evil.example/strom/"})
+check("Fremde Seite als Referer -> Portal", s == 200 and b"<title>Tools</title>" in d, s)
+s, loc, _, d = req("GET", "/", "authsess=2", {"Referer": "http://tools.test/datei-tool/"})
+check("Von Datei-Tool oder ohne Rechte -> Portal", s == 200 and b"<title>Tools</title>" in d, s)
+c = http.client.HTTPConnection(*N, timeout=5); c.request("GET", "/", headers={"Host": "tools.test", "Cookie": LOGIN}); r = c.getresponse(); r.read()
+csp = r.getheader("Content-Security-Policy") or ""
+check("Portal behält die strenge CSP", "default-src 'self'" in csp and "unsafe-inline" not in csp, csp)
+
 print("== Wartungsmodus")
 tools = {t["slug"]: t for t in api("GET", "/admin/tools")[1]}
 t = dict(tools["strom"]); t["enabled"] = False

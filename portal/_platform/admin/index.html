@@ -35,7 +35,7 @@
   </section>
   <p id="error" class="alert" role="alert" hidden></p>
   <div class="panel">
-    <div class="table-head"><span>Tool</span><span>Pfad</span><span>Gruppe</span><span></span></div>
+    <div class="table-head"><span>Tool</span><span>Adresse</span><span>Gruppe</span><span></span></div>
     <div id="list"></div>
   </div>
   <p class="hint">Dateien eines Tools legst du auf dem Server im Ordner <code>sites/&lt;pfad&gt;/</code> ab.</p>
@@ -61,7 +61,7 @@
   <form id="form" method="dialog" autocomplete="off">
     <header class="dlg-head"><h2 id="dlg-title">Neues Tool</h2></header>
     <div class="dlg-body">
-      <label>Pfad (Teil der URL)
+      <label>Kurzname (Teil der Adresse)
         <div class="prefix"><span>/</span><input id="f-slug" required pattern="[a-z0-9][a-z0-9\-]{0,40}" placeholder="home-assistant-fix"></div>
         <small>Nur a–z, 0–9 und „-“. Kann später nicht geändert werden.</small>
       </label>
@@ -76,12 +76,18 @@
         <label class="opt-radio"><input type="radio" name="type" value="static" checked><span><strong>Dateien</strong><small>Eigene Webseite aus <code>sites/&lt;pfad&gt;/</code></small></span></label>
         <label class="opt-radio"><input type="radio" name="type" value="proxy"><span><strong>Weiterleitung</strong><small>Leitet an einen laufenden Dienst weiter</small></span></label>
       </div>
+      <div class="lbl">Aufruf über</div>
+      <div class="seg" role="radiogroup" aria-label="Aufruf über">
+        <label class="opt-radio"><input type="radio" name="access" value="path" checked><span><strong>Pfad</strong><small id="acc-path-hint"></small></span></label>
+        <label class="opt-radio" id="acc-sub-label"><input type="radio" name="access" value="subdomain"><span><strong>Eigene Subdomain</strong><small id="acc-sub-hint"></small></span></label>
+      </div>
+      <p class="field-note" id="acc-note">Subdomain für Apps, die nur direkt auf „/“ laufen, z. B. Nginx Proxy Manager, Portainer und viele andere Web-Apps.</p>
       <div id="proxy-fields" hidden>
         <label>Ziel-Adresse
           <input id="f-upstream" maxlength="255" placeholder="http://mein-container:8080">
           <small>Container-Name oder IP mit Port, ohne Pfad. Der Container muss im Docker-Netzwerk <code>toolplattform_tools</code> hängen.</small>
         </label>
-        <label class="check"><input type="checkbox" id="f-strip" checked><span>Pfad-Präfix entfernen<small>Der Dienst bekommt <code>/</code> statt <code>/&lt;pfad&gt;/</code>. Abschalten, wenn der Dienst selbst unter einem Unterpfad läuft.</small></span></label>
+        <label class="check" id="strip-row"><input type="checkbox" id="f-strip" checked><span>Pfad-Präfix entfernen<small>Der Dienst bekommt <code>/</code> statt <code>/&lt;pfad&gt;/</code>. Abschalten, wenn der Dienst selbst unter einem Unterpfad läuft.</small></span></label>
       </div>
       <div class="two">
         <label class="narrow">Symbol <span class="opt">optional</span>

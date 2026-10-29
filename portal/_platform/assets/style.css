@@ -160,3 +160,6 @@ select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (max-width: 720px) { .srow { grid-template-columns: minmax(0, 1fr); gap: 4px; } }
 
 [hidden] { display: none !important; }
+.field-note { color: var(--muted); font-size: .8rem; margin: -6px 0 14px; }
+.opt-radio:has(input:disabled) { opacity: .55; cursor: not-allowed; }
+.pathcell .mono { white-space: nowrap; }

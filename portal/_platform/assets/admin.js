@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 const dlg = $('dlg'), dlgDel = $('dlg-del'), form = $('form');
 let editing = null; // Pfad beim Bearbeiten, sonst null
 let toolsCache = [];
+let toolsDomain = '';
 
 async function api(method, url, body) {
   const res = await fetch(url, {
@@ -47,8 +48,9 @@ async function load() {
       cell.append(tile(t), info);
 
       const path = el('div', 'pathcell');
-      const link = el('a', 'mono', '/' + t.slug + '/');
-      link.href = '/' + encodeURIComponent(t.slug) + '/';
+      const link = el('a', 'mono', t.access === 'subdomain' ? t.url.replace(/^https:\/\//, '') : '/' + t.slug + '/');
+      link.href = t.url;
+      link.title = t.url;
       path.append(link);
       if (t.type === 'proxy') {
         const up = el('span', 'upstream', '→ ' + t.upstream);
@@ -85,6 +87,8 @@ function openDialog(t) {
   $('f-desc').value = t ? t.description : '';
   $('f-icon').value = t ? t.icon : '';
   $('f-group').value = t ? t.group : '';
+  const access = t && t.access === 'subdomain' ? 'subdomain' : 'path';
+  document.querySelector(`input[name=access][value=${access}]`).checked = true;
   const kind = t && t.type === 'proxy' ? 'proxy' : 'static';
   document.querySelector(`input[name=type][value=${kind}]`).checked = true;
   $('f-upstream').value = t && t.upstream ? t.upstream : '';
@@ -116,10 +120,17 @@ function confirmRemove(t) {
 
 function syncType() {
   const proxy = document.querySelector('input[name=type]:checked').value === 'proxy';
+  const sub = document.querySelector('input[name=access]:checked').value === 'subdomain';
   $('proxy-fields').hidden = !proxy;
   $('f-upstream').required = proxy;
+  // "Pfad-Präfix entfernen" ist nur beim Aufruf über einen Pfad relevant
+  $('strip-row').hidden = sub;
+  const slug = $('f-slug').value || '<pfad>';
+  $('acc-path-hint').textContent = (location.host || '') + '/' + slug + '/';
+  $('acc-sub-hint').textContent = toolsDomain ? slug + '.' + toolsDomain : 'TOOLS_DOMAIN in .env setzen';
 }
-document.querySelectorAll('input[name=type]').forEach(r => r.addEventListener('change', syncType));
+document.querySelectorAll('input[name=type], input[name=access]').forEach(r => r.addEventListener('change', syncType));
+$('f-slug').addEventListener('input', syncType);
 
 // Gruppenname beim Anlegen automatisch vorschlagen
 $('f-slug').addEventListener('input', () => {
@@ -135,7 +146,8 @@ form.addEventListener('submit', async ev => {
   const save = $('save');
   save.disabled = true;
   const type = document.querySelector('input[name=type]:checked').value;
-  const body = { name: $('f-name').value, description: $('f-desc').value, icon: $('f-icon').value, group: $('f-group').value, type };
+  const access = document.querySelector('input[name=access]:checked').value;
+  const body = { name: $('f-name').value, description: $('f-desc').value, icon: $('f-icon').value, group: $('f-group').value, type, access };
   if (type === 'proxy') { body.upstream = $('f-upstream').value.trim(); body.strip_prefix = $('f-strip').checked; }
   try {
     if (editing) await api('PUT', '/_platform/api/admin/tools/' + encodeURIComponent(editing), body);
@@ -277,5 +289,14 @@ $('link-copy').onclick = async () => {
   catch (e) { input.select(); document.execCommand('copy'); toast('Link kopiert'); }
 };
 
+async function loadDomain() {
+  try {
+    toolsDomain = (await api('GET', '/_platform/api/me')).toolsDomain || '';
+  } catch (e) { toolsDomain = ''; }
+  const radio = document.querySelector('input[name=access][value=subdomain]');
+  radio.disabled = !toolsDomain;
+}
+
+loadDomain();
 load();
 loadShares();

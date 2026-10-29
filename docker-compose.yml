@@ -1,5 +1,7 @@
 # tools-web:  nginx, liefert Portal + Tool-Dateien aus bzw. leitet an Tool-Container weiter, prüft Rechte über tools-api.
-#             Kein veröffentlichter Port - nur der Nginx Proxy Manager erreicht ihn.
+#             Kein veröffentlichter Port - nur der Nginx Proxy Manager erreicht ihn:
+#               Port 8080 = tools.example.de (Portal + Tools unter /<pfad>/)
+#               Port 8082 = *.tools.example.de (Tools mit eigener Subdomain)
 # tools-api:  kleines Python-Backend (Tool-Liste, Rechte, Admin-API). Nur im internen Netz.
 # Bind-Mounts nur für das, was du selbst pflegst: ./sites (Tool-Dateien) und ./data (Tool-Liste).
 name: toolplattform
@@ -31,6 +33,7 @@ services:
     user: "${TOOLS_UID:-1000}:${TOOLS_GID:-1000}"
     environment:
       ADMIN_GROUP: ${ADMIN_GROUP:-tools-admin}
+      TOOLS_DOMAIN: ${TOOLS_DOMAIN:-}
       TOOLS_SECRET: ${TOOLS_SECRET:?TOOLS_SECRET in .env setzen (openssl rand -hex 32)}
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]

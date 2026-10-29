@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 os.environ.setdefault("TOOLS_DATA", str(ROOT / "dev" / "data" / "tools.json"))
 os.environ.setdefault("TOOLS_SITES", str(ROOT / "sites"))
 os.environ.setdefault("TOOLS_SECRET", "dev-secret")
+os.environ.setdefault("TOOLS_DOMAIN", "tools.example.de")
 sys.path.insert(0, str(ROOT / "app"))
 import server  # noqa: E402
 

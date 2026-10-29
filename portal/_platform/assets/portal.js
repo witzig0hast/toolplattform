@@ -28,11 +28,11 @@
 
     for (const t of tools) {
       const a = el('a', 'card');
-      a.href = '/' + encodeURIComponent(t.slug) + '/';
+      a.href = t.url;
       const body = el('span', 'card-body');
       body.append(el('span', 'name', t.name));
       if (t.description) body.append(el('span', 'desc', t.description));
-      body.append(el('span', 'path', '/' + t.slug));
+      body.append(el('span', 'path', t.url.startsWith('/') ? t.url : t.url.replace(/^https:\/\//, '').replace(/\/$/, '')));
       const arrow = svgIcon('M7 17 17 7M8 7h9v9', 18);
       arrow.classList.add('arrow');
       a.append(tile(t), body, arrow);

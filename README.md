@@ -42,7 +42,7 @@ docker compose up -d --build   # baut beide Images und startet sie
 ### Docker-Aufbau
 | Container | Image | Aufgabe | Erreichbar |
 |---|---|---|---|
-| `tools-web` | `toolplattform-web` (nginx, Portal eingebaut) | liefert Portal und Dateien-Tools aus, leitet an Proxy-Tools weiter, fragt `tools-api` nach den Rechten | nur über den NPM |
+| `tools-web` | `toolplattform-web` (nginx, Portal eingebaut) | liefert Portal und Dateien-Tools aus, leitet an Proxy-Tools weiter, fragt `tools-api` nach den Rechten. Port 8080 = Haupt-Domain, Port 8082 = Tool-Subdomains | nur über den NPM |
 | `tools-api` | `toolplattform-api` (Python) | Tool-Liste, Rechte, Admin-API | nur intern, kein Internet |
 
 Beide haben Healthchecks (`docker compose ps` zeigt `healthy`). Von außen eingehängt sind nur `./sites` (deine Tool-Dateien) und `./data` (die Tool-Liste). Nach Änderungen am Portal/nginx: `docker compose up -d --build`. Backup: `./sites` und `./data` sichern.
@@ -76,6 +76,27 @@ Als Ziel-Adresse trägst du dann `http://mein-tool:<port>` ein (Container-Name a
 - **Pfad-Präfix entfernen** (Standard an): Der Dienst sieht `/`, nicht `/<pfad>/`. Das passt für Dienste, die auf der Wurzel laufen. Läuft der Dienst selbst unter einem Unterpfad (Base-URL `/<pfad>`), schalte es aus. Viele Apps (z. B. Home Assistant) funktionieren unter einem Unterpfad nur eingeschränkt; dann ist eine eigene Subdomain sauberer.
 - Der Dienst bekommt die Header `X-Authentik-Username`, `X-Authentik-Groups`, `X-Authentik-Email` und `X-Authentik-Name`, kann sich also darauf für Single Sign-on stützen.
 - Nicht erlaubte Ziele: `localhost`/Loopback, Link-Local (`169.254.x.x`) sowie `tools-web`/`tools-api`.
+
+### Tools mit eigener Subdomain (für Apps, die nur auf „/“ laufen)
+Manche Apps funktionieren nicht unter einem Pfad wie `tools.example.de/proxy-settings/`. Das betrifft vor allem **Single-Page-Apps** wie den Nginx Proxy Manager, Portainer oder Grafana ohne Base-URL. Sie lesen die Adresse im Browser selbst aus und kennen dann `/proxy-settings/` nicht („Oops, you've just found an error page“). Ihre internen Links („Dashboard“) springen außerdem auf `/`, also zurück ins Portal oder auf fremde Pfade.
+
+Für solche Apps wählst du beim Tool **Aufruf über → Eigene Subdomain**. Das Tool läuft dann unter `<kurzname>.tools.example.de`, z. B. `proxy-settings.tools.example.de`. Dort gehört die ganze Adresse dem Tool, Login und Gruppenprüfung bleiben gleich. Im Portal verlinkt die Kachel automatisch auf die Subdomain.
+
+**Einmalig einrichten** (danach braucht kein Tool mehr einen eigenen NPM-Eintrag):
+1. `.env`: `TOOLS_DOMAIN=tools.example.de` setzen, dann `docker compose up -d --build`.
+2. **DNS**: einen Wildcard-Eintrag `*.tools.example.de` auf deinen Server (wie `tools.example.de`).
+3. **Zertifikat**: im NPM unter *SSL Certificates → Add → Let's Encrypt* ein Zertifikat für `*.tools.example.de` anlegen. Wildcard-Zertifikate gehen nur mit **DNS Challenge** (Haken „Use a DNS Challenge“, deinen DNS-Anbieter wählen, API-Zugangsdaten eintragen).
+4. **NPM Proxy Host** neu anlegen:
+   - Domain: `*.tools.example.de`, Scheme `http`, Forward Hostname `tools-web`, **Port `8082`**
+   - *Cache Assets* aus, *Block Common Exploits* an, *Websockets Support* an
+   - SSL: das Wildcard-Zertifikat, *Force SSL*, *HTTP/2*
+   - Advanced: wie beim Haupt-Host den Inhalt von `npm/advanced.conf`
+   - Custom location `/` → `tools-web`, **Port `8082`**, Zahnrad: Inhalt von `npm/location-root.conf` (mit deinem `TOOLS_SECRET`)
+5. **Authentik**: nichts zu tun, solange der Provider `tools` auf *Forward auth (domain level)* mit Cookie-Domain `example.de` steht. Das gilt dann automatisch auch für alle Subdomains.
+
+Hinweise:
+- Freigabe-Links funktionieren nur über den Pfad (`tools.example.de/s/...`), nicht für die Subdomain. Bei Apps, die nur auf „/“ laufen, klappt der Freigabe-Link daher meist nicht.
+- Statt Wildcard kannst du auch einzelne Subdomains im NPM anlegen (z. B. nur `proxy-settings.tools.example.de`), alle mit Port `8082`.
 
 ### Öffentliche Freigabe-Links
 Als Admin kannst du ein Tool ohne Login teilen: in `/_platform/admin/` bei einem Tool auf **Teilen** (oder unten **+ Freigabe-Link**). Die Gültigkeit stellst du genau ein:

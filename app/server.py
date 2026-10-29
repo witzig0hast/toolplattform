@@ -25,6 +25,8 @@ from urllib.parse import unquote, urlsplit
 DATA_FILE = Path(os.environ.get("TOOLS_DATA", "/data/tools.json"))
 SITES_DIR = Path(os.environ.get("TOOLS_SITES", "/srv/sites"))
 ADMIN_GROUP = os.environ.get("ADMIN_GROUP", "tools-admin")
+# Basis-Domain für Tools mit eigener Subdomain (<slug>.TOOLS_DOMAIN), z. B. tools.example.de
+TOOLS_DOMAIN = os.environ.get("TOOLS_DOMAIN", "").strip().strip(".").lower()
 # Gemeinsames Geheimnis zwischen NPM und tools-web: ohne es gelten Authentik-Header nicht
 TOOLS_SECRET = os.environ.get("TOOLS_SECRET", "")
 # Interner nginx-Server (nur im Container erreichbar), der die statischen Tool-Dateien ausliefert
@@ -143,7 +145,12 @@ def validate_tool(body):
         "icon": clean_text(body.get("icon", ""), "Symbol", 8),
         "group": group,
         "type": kind,
+        "access": body.get("access", "path"),
     }
+    if tool["access"] not in ("path", "subdomain"):
+        raise ValueError("Aufruf muss 'path' oder 'subdomain' sein")
+    if tool["access"] == "subdomain" and not TOOLS_DOMAIN:
+        raise ValueError("Für Subdomains muss TOOLS_DOMAIN in der .env gesetzt sein")
     if kind == "proxy":
         tool["upstream"] = validate_upstream(body.get("upstream"))
         strip = body.get("strip_prefix", True)
@@ -170,15 +177,8 @@ def parse_cookie(header, name):
     return ""
 
 
-def resolve_request(raw_uri, groups, referer="", host="", cookie_header=""):
-    """Entscheidet über einen Zugriff und liefert das Ziel für nginx.
-
-    raw_uri ist $request_uri von nginx (Pfad + Query, so wie der Client ihn geschickt hat).
-    Rückgabe: None (verboten) oder dict(target, redir_from, redir_to, cookie)
-      target      vollständige Ziel-URL (interner Datei-Server oder Weiterleitungs-Adresse)
-      redir_from/to  Location-Header des Ziels, die mit redir_from beginnen, werden auf redir_to umgeschrieben
-      cookie      Set-Cookie-Wert (merkt sich das zuletzt genutzte Tool) oder ""
-    """
+def clean_uri(raw_uri):
+    """Rohe URL (Pfad + Query) prüfen. Rückgabe (raw_path, suffix, segments) oder None bei unsauberen Pfaden."""
     if not raw_uri.startswith("/") or "#" in raw_uri:
         return None
     raw_path, _, query = raw_uri.partition("?")
@@ -192,7 +192,46 @@ def resolve_request(raw_uri, groups, referer="", host="", cookie_header=""):
         return None
     if any(seg in ("", ".", "..") for seg in segments[1:-1]) or segments[-1] in (".", ".."):
         return None
-    suffix = ("?" + query) if query else ""
+    return raw_path, ("?" + query) if query else "", segments
+
+
+def tool_url(slug, tool):
+    if tool.get("access") == "subdomain" and TOOLS_DOMAIN:
+        return f"https://{slug}.{TOOLS_DOMAIN}/"
+    return f"/{slug}/"
+
+
+def resolve_subdomain(raw_uri, groups, host):
+    """Zugriff über <slug>.TOOLS_DOMAIN: das ganze Host-Verzeichnis gehört dem Tool (kein Pfad-Präfix)."""
+    cleaned = clean_uri(raw_uri)
+    host = host.split(":")[0].lower()
+    if not cleaned or not TOOLS_DOMAIN or not host.endswith("." + TOOLS_DOMAIN):
+        return None
+    raw_path, suffix, _ = cleaned
+    slug = host[: -len(TOOLS_DOMAIN) - 1]
+    if not SLUG_RE.match(slug):
+        return None
+    tool = load_tools().get(slug)
+    if not tool or tool.get("access") != "subdomain" or not can_see(tool, groups):
+        return None
+    if tool.get("type", "static") == "proxy":
+        return {"target": tool["upstream"] + raw_path + suffix, "redir": NO_REDIRECT, "cookie": ""}
+    return {"target": STATIC_UPSTREAM + "/" + slug + raw_path + suffix, "redir": ("/" + slug + "/", "/"), "cookie": ""}
+
+
+def resolve_request(raw_uri, groups, referer="", host="", cookie_header=""):
+    """Entscheidet über einen Zugriff und liefert das Ziel für nginx.
+
+    raw_uri ist $request_uri von nginx (Pfad + Query, so wie der Client ihn geschickt hat).
+    Rückgabe: None (verboten) oder dict(target, redir_from, redir_to, cookie)
+      target      vollständige Ziel-URL (interner Datei-Server oder Weiterleitungs-Adresse)
+      redir_from/to  Location-Header des Ziels, die mit redir_from beginnen, werden auf redir_to umgeschrieben
+      cookie      Set-Cookie-Wert (merkt sich das zuletzt genutzte Tool) oder ""
+    """
+    cleaned = clean_uri(raw_uri)
+    if not cleaned:
+        return None
+    raw_path, suffix, segments = cleaned
     tools = load_tools()
     slug = segments[1] if len(segments) > 1 else ""
 
@@ -317,18 +356,24 @@ class Handler(BaseHTTPRequestHandler):
         if not secret_ok(self.headers.get("X-Tools-Secret", "")):
             return self.send_json(403, {"error": "Anfrage nicht über den Proxy gekommen"})
         path = urlsplit(self.path).path
+        # Von tools-web gesetzt: "path" (tools.example.de/<slug>/) oder "subdomain" (<slug>.tools.example.de)
+        mode = self.headers.get("X-Tools-Mode", "path")
         # Öffentliche Freigabe-Links (/s/...) brauchen keinen Login; alles andere schon
-        public_share = path == "/authz" and self.headers.get("X-Original-URI", "").startswith("/s/")
+        public_share = (path == "/authz" and mode == "path"
+                        and self.headers.get("X-Original-URI", "").startswith("/s/"))
         if not username and not public_share:
             return self.send_json(401, {"error": "nicht angemeldet"})
 
         if method == "GET" and path == "/authz":
-            res = resolve_request(
-                self.headers.get("X-Original-URI", ""), groups,
-                referer=self.headers.get("Referer", ""),
-                host=self.headers.get("Host", ""),
-                cookie_header=self.headers.get("Cookie", ""),
-            )
+            if mode == "subdomain":
+                res = resolve_subdomain(self.headers.get("X-Original-URI", ""), groups, self.headers.get("Host", ""))
+            else:
+                res = resolve_request(
+                    self.headers.get("X-Original-URI", ""), groups,
+                    referer=self.headers.get("Referer", ""),
+                    host=self.headers.get("Host", ""),
+                    cookie_header=self.headers.get("Cookie", ""),
+                )
             if not res:
                 return self.send_json(403)
             return self.send_json(200, extra={
@@ -343,10 +388,11 @@ class Handler(BaseHTTPRequestHandler):
                 "username": username,
                 "name": self.headers.get("X-Authentik-Name", "") or username,
                 "isAdmin": is_admin(groups),
+                "toolsDomain": TOOLS_DOMAIN,
             })
         if method == "GET" and path == "/api/tools":
             tools = [
-                {"slug": s, "name": t["name"], "description": t["description"], "icon": t["icon"]}
+                {"slug": s, "name": t["name"], "description": t["description"], "icon": t["icon"], "url": tool_url(s, t)}
                 for s, t in sorted(load_tools().items(), key=lambda kv: kv[1]["name"].lower())
                 if can_see(t, groups)
             ]
@@ -368,7 +414,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if method == "GET" and slug is None:
                 tools = load_tools()
-                return self.send_json(200, [{"slug": s, "type": "static", **t} for s, t in sorted(tools.items())])
+                return self.send_json(200, [{"slug": s, "type": "static", "access": "path", **t, "url": tool_url(s, t)}
+                                            for s, t in sorted(tools.items())])
             if method == "POST" and slug is None:
                 body = self.read_body()
                 new_slug = body.get("slug", "")

@@ -4,7 +4,7 @@
 set -e
 H=$(cd "$(dirname "$0")" && pwd); R=$(cd "$H/../.." && pwd); T=${E2E_DIR:-/tmp/toolplattform-e2e}
 # Test-Apps brauchen "normale" IPs (Loopback-Ziele verbietet die Plattform zu Recht)
-for i in 2 3 4; do ip addr add 10.99.0.$i/32 dev lo 2>/dev/null || true; done
+for i in 2 3 4 5; do ip addr add 10.99.0.$i/32 dev lo 2>/dev/null || true; done
 "$H/down.sh" 2>/dev/null || true
 rm -rf $T; mkdir -p $T/sites/datei-tool $T/data $T/ngx/logs
 echo '<!doctype html><title>Datei</title><link rel=stylesheet href="style.css"><h1>Datei-Tool</h1>' > $T/sites/datei-tool/index.html
@@ -15,6 +15,7 @@ json.dump({
  'strom': {'name':'Strom','description':'','icon':'','group':'tool-strom','type':'proxy','upstream':'http://10.99.0.3:9001','strip_prefix':True,'access':'path'},
  'npm': {'name':'NPM','description':'','icon':'','group':'tool-npm','type':'proxy','upstream':'http://10.99.0.2:9001','strip_prefix':True,'access':'subdomain'},
  'basisapp': {'name':'Basis','description':'','icon':'','group':'tool-strom','type':'proxy','upstream':'http://10.99.0.4:9001','strip_prefix':False,'access':'path'},
+ 'spa': {'name':'SPA','description':'Single-Page-App','icon':'','group':'tool-strom','type':'proxy','upstream':'http://10.99.0.5:9001','strip_prefix':True,'access':'path'},
  'datei-tool': {'name':'Datei','description':'','icon':'','group':'tool-datei','access':'path'},
 }, open(sys.argv[1] + '/data/tools.json', 'w'))
 PY
@@ -72,6 +73,7 @@ cd "$T"
 python3 $H/mockapp.py 10.99.0.3 Strom-App >/dev/null 2>&1 &
 python3 $H/mockapp.py 10.99.0.2 NPM-App >/dev/null 2>&1 &
 python3 $H/mockapp.py 10.99.0.4 Basis-App >/dev/null 2>&1 &
+python3 $H/mock_spa.py 10.99.0.5 >/dev/null 2>&1 &
 python3 $H/mock_authentik.py >/dev/null 2>&1 &
 TOOLS_DATA=$T/data/tools.json TOOLS_SITES=$T/sites TOOLS_SECRET=geheim TOOLS_DOMAIN=tools.test \
   TOOLS_API_SELF=http://127.0.0.1:8000 python3 $R/app/server.py >$T/api.log 2>&1 &

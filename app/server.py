@@ -25,7 +25,7 @@ import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import files as filestore
 from stats import Stats
@@ -51,7 +51,9 @@ MFA_TARGET = STATIC_UPSTREAM + "/_mfa"                    # Seite "2FA erforderl
 SHARE_BLOCKED_TARGET = STATIC_UPSTREAM + "/_share_blocked"  # Seite "Link gerade nicht freigegeben"
 # So erreicht tools-web dieses Backend (für die PIN-Abfrage bei Freigabe-Links)
 TOOLS_API_SELF = os.environ.get("TOOLS_API_SELF", "http://tools-api:8000").rstrip("/")
-COOKIE_NAME = "tools_last"      # zuletzt genutztes Tool (angemeldete Nutzer, absolute Pfade)
+APP_COOKIE = "tools_app"        # aktive App im App-Modus (angemeldete Nutzer): "<kurzname>:<letzte Nutzung>"
+APP_IDLE_SECONDS = 3600         # App-Sitzung endet nach 1 Stunde ohne Nutzung (dann zeigt "/" wieder das Portal)
+APP_REFRESH_SECONDS = 300       # bei Nutzung wird die Sitzung höchstens alle 5 Minuten verlängert
 SHARE_COOKIE = "tools_share"    # Freigabe-Sitzung (Gäste ohne Login)
 NO_REDIRECT = ("/_none_/", "/_none_/")  # Platzhalter: nginx proxy_redirect ohne Wirkung
 
@@ -542,34 +544,37 @@ def same_host(url, host):
     return bool(ref_host) and ref_host == host.rsplit(":", 1)[0].lower()
 
 
-def root_app(tools, groups, referer, host, cookie_header):
-    """Kam der Klick auf "/" aus einer App, die auf "/" läuft? Dann deren Kurzname, sonst None."""
-    if not referer:
-        return None
-    if not same_host(referer, host):
-        return None
-    ref = urlsplit(referer)
-    first = unquote(ref.path).split("/")[1] if ref.path.count("/") >= 1 else ""
-    if not first or first.startswith("_") or first == "s":
-        return None  # Portal, Verwaltung, Freigabe-Links
-    if first in tools:
-        cand = first                                  # z. B. von /bmvtssg/... auf "Home"
-    else:
-        cand = parse_cookie(cookie_header, COOKIE_NAME)  # z. B. von /settings (absoluter App-Pfad) auf "Home"
-    t = tools.get(cand)
-    if t and t.get("type") == "proxy" and t.get("strip_prefix", True) and can_see(t, groups):
-        return cand
-    return None
+def app_mode(tool):
+    """App-Modus: Weiterleitungs-Tools, die auf "/" laufen, laufen auf der Hauptadresse wie auf einer eigenen Domain."""
+    return tool.get("type") == "proxy" and tool.get("strip_prefix", True)
 
 
-def resolve_root(tools, groups, referer, host, cookie_header):
-    app = root_app(tools, groups, referer, host, cookie_header)
-    if app:
-        return redirect_to("/" + app + "/")
-    return result(PORTAL_TARGET)
+def app_cookie(slug):
+    return (f"{APP_COOKIE}={slug}:{int(time.time())}; Path=/; Max-Age={APP_IDLE_SECONDS}; "
+            "HttpOnly; Secure; SameSite=Lax")
 
 
-def resolve_request(raw_uri, groups, referer="", host="", cookie_header="", client_ip="", mfa=False):
+def current_app(cookie_header):
+    slug, _, ts = parse_cookie(cookie_header, APP_COOKIE).partition(":")
+    return slug, (int(ts) if ts.isdigit() else 0)
+
+
+def go_to(location, cookie="", slug=""):
+    """Weiterleitung auf einen beliebigen Pfad dieser Domain (über das Backend, damit Sonderzeichen sicher bleiben)."""
+    return result(f"{TOOLS_API_SELF}/_go?to={quote(location, safe='')}", cookie=cookie, slug=slug)
+
+
+def app_target(tool, raw_path, suffix, groups, mfa, slug="", last_used=0):
+    if not tool_enabled(tool) and not is_admin(groups):
+        return maintenance()
+    if tool.get("require_mfa") and not mfa:
+        return result(MFA_TARGET)
+    # Sitzung bei Nutzung verlängern (nicht bei jeder Anfrage, nur alle paar Minuten)
+    refresh = app_cookie(slug) if slug and time.time() - last_used > APP_REFRESH_SECONDS else ""
+    return result(tool["upstream"] + raw_path + suffix, cookie=refresh)
+
+
+def resolve_request(raw_uri, groups, referer="", host="", cookie_header="", client_ip="", mfa=False, navigate=True):
     """Entscheidet über einen Zugriff angemeldeter Nutzer und liefert das Ziel für nginx.
 
     raw_uri ist $request_uri von nginx (Pfad + Query, so wie der Client ihn geschickt hat).
@@ -585,12 +590,38 @@ def resolve_request(raw_uri, groups, referer="", host="", cookie_header="", clie
     tools = load_tools()
     slug = segments[1] if len(segments) > 1 else ""
 
+    # Aktive App (App-Modus) aus dem Cookie - Rechte werden bei jeder Anfrage neu geprüft
+    cur_slug, cur_ts = current_app(cookie_header)
+    cur_tool = tools.get(cur_slug)
+    cur_ok = (bool(cur_tool) and app_mode(cur_tool) and can_see(cur_tool, groups)
+              and time.time() - cur_ts < APP_IDLE_SECONDS)
+
     if raw_path == "/":
-        return resolve_root(tools, groups, referer, host, cookie_header)
+        # Solange eine App benutzt wird, gehört "/" ihr (Neuladen, "Home"-Link, Tab-Wechsel).
+        # Portal: ohne aktive App, aus der Verwaltung heraus oder unter /_platform/portal (beendet die App).
+        from_platform = bool(referer) and same_host(referer, host) and urlsplit(referer).path.startswith("/_platform/")
+        if cur_ok and not from_platform:
+            return app_target(cur_tool, raw_path, suffix, groups, mfa, cur_slug, cur_ts)
+        return result(PORTAL_TARGET)
     if slug == "s":
         return resolve_share_path(raw_path, suffix, segments, tools, cookie_header, client_ip)
 
     tool = tools.get(slug)
+    if tool and app_mode(tool):
+        # Pfad der aktiven App, der zufällig wie ein anderes Tool heißt (z. B. /api/... und ein Tool "api")?
+        if not navigate and cur_ok and cur_slug != slug:
+            return app_target(cur_tool, raw_path, suffix, groups, mfa, cur_slug, cur_ts)
+        if not can_see(tool, groups):
+            return None
+        prefix = "/" + slug
+        if not raw_path.startswith(prefix) or (len(raw_path) > len(prefix) and raw_path[len(prefix)] != "/"):
+            return None
+        if not tool_enabled(tool) and not is_admin(groups):
+            return maintenance()
+        if tool.get("require_mfa") and not mfa:
+            return result(MFA_TARGET)
+        # App öffnen: als aktive App merken und auf die Hauptadresse wechseln (/<kurzname>/x -> /x)
+        return go_to((raw_path[len(prefix):] or "/") + suffix, app_cookie(slug), slug=slug)
     if tool:
         if not can_see(tool, groups):
             return None
@@ -604,34 +635,13 @@ def resolve_request(raw_uri, groups, referer="", host="", cookie_header="", clie
             return result(MFA_TARGET)
         if raw_path == prefix:  # /name -> /name/ (relative Links brauchen den Schrägstrich)
             return redirect_to(prefix + "/")
-        if tool.get("type", "static") == "proxy":
-            strip = tool.get("strip_prefix", True)
-            rest = raw_path[len(prefix):] if strip else raw_path
-            cookie = ""
-            if strip and parse_cookie(cookie_header, COOKIE_NAME) != slug:
-                cookie = f"{COOKIE_NAME}={slug}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Lax"
-            return result(tool["upstream"] + (rest or "/") + suffix,
-                          ("/", prefix + "/") if strip else NO_REDIRECT, cookie, slug=slug)
+        if tool.get("type", "static") == "proxy":  # App mit eigener Base-URL /<kurzname>/
+            return result(tool["upstream"] + raw_path + suffix, slug=slug)
         return result(STATIC_UPSTREAM + raw_path + suffix, slug=slug)
 
-    # Unbekannter erster Pfadteil: Viele Apps rufen absolute Pfade wie /api/x oder /static/app.js auf.
-    # Dann das zuletzt benutzte Tool nehmen - erst nach Referer, dann nach Merk-Cookie.
-    candidates = []
-    if referer:
-        ref = urlsplit(referer)
-        if same_host(referer, host):
-            ref_parts = unquote(ref.path).split("/")
-            if len(ref_parts) > 1:
-                candidates.append(ref_parts[1])
-    candidates.append(parse_cookie(cookie_header, COOKIE_NAME))
-    for cand in candidates:
-        t = tools.get(cand)
-        if t and t.get("type") == "proxy" and t.get("strip_prefix", True) and can_see(t, groups):
-            if not tool_enabled(t) and not is_admin(groups):
-                return maintenance()
-            if t.get("require_mfa") and not mfa:
-                return result(MFA_TARGET)
-            return result(t["upstream"] + raw_path + suffix, ("/", "/" + cand + "/"), slug=cand)
+    # Jeder andere Pfad (/settings, /api/..., /static/...) gehört der aktiven App
+    if cur_ok:
+        return app_target(cur_tool, raw_path, suffix, groups, mfa, cur_slug, cur_ts)
     return None
 
 
@@ -759,6 +769,17 @@ class Handler(BaseHTTPRequestHandler):
         path = url.path
         if method == "GET" and path == "/healthz":
             return self.send_json(200, {"ok": True})
+        if path == "/_go":
+            # Weiterleitung innerhalb dieser Domain (vom Backend selbst in /authz vorgegeben)
+            to = parse_qs(url.query).get("to", ["/"])[0]
+            if not to.startswith("/") or to.startswith("//") or "\\" in to or any(ord(c) < 32 for c in to):
+                to = "/"
+            self.send_response(302)
+            self.send_header("Location", quote(to, safe="/%?=&:;,+@!$'()*~-._#"))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if path.startswith("/_gate/"):
             # PIN-Abfrage für Freigabe-Links. tools-web leitet nur hierher, wenn das Backend selbst
             # (in /authz) dieses Ziel vorgegeben hat; das Geheimnis wird an Tools nie weitergegeben.
@@ -780,7 +801,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 res = resolve_request(raw_uri, groups, referer=self.headers.get("Referer", ""),
                                       host=self.headers.get("Host", ""), cookie_header=cookies,
-                                      client_ip=self.client_ip(), mfa=self.mfa())
+                                      client_ip=self.client_ip(), mfa=self.mfa(),
+                                      navigate=self.headers.get("Sec-Fetch-Mode", "navigate") == "navigate")
             # Nutzung zählen: nur echte Seitenaufrufe (Navigation), nicht jede Datei/API-Anfrage
             if (res and username and res.get("slug") and self.headers.get("Sec-Fetch-Mode") == "navigate"
                     and self.headers.get("Sec-Fetch-Dest", "document") == "document"):

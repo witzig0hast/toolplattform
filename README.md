@@ -53,7 +53,7 @@ Optional für Tools mit eigener Subdomain: siehe unten.
 Beide haben Healthchecks (`docker compose ps` zeigt `healthy`) und laufen read-only ohne Zusatzrechte. Von außen eingehängt sind nur `./sites` (Tool-Dateien) und `./data` (Tool-Liste, Freigabe-Links, Protokoll, Statistik, Favoriten, Status). **Backup:** `./sites` und `./data` sichern.
 
 ## Benutzung
-- `https://tools.example.de/` – **Portal**: deine Tools als Kacheln, nach Kategorien gruppiert, mit Suche.
+- `https://tools.example.de/` – **Portal**: deine Tools als Kacheln, nach Kategorien gruppiert, mit Suche. Immer erreichbar unter `https://tools.example.de/_platform/portal` (siehe App-Modus).
 - `https://tools.example.de/` – Stern ☆ an einer Kachel = **Favorit** (pro Person). „Zuletzt benutzt“ erscheint automatisch.
 - `https://tools.example.de/_platform/admin/` – **Verwaltung** (nur `tools-admin`), oben mit Sprungleiste: Tools · Freigaben · Nutzung · Überwachung · Protokoll.
 
@@ -84,8 +84,11 @@ networks:
 ```
 Ziel-Adresse dann `http://mein-tool:<port>` (Port **im** Container). Jede andere IP im Netz geht auch, z. B. `http://192.168.1.50:3000`. Nicht erlaubt sind `localhost`/Loopback, Link-Local (`169.254.x.x`) sowie `tools-web`/`tools-api`.
 
-- **Pfad-Präfix entfernen** (Standard an): Der Dienst sieht `/` statt `/<kurzname>/`. Ausschalten, wenn der Dienst selbst eine Base-URL `/<kurzname>` hat.
-- **Absolute Pfade** (`/api/...`, `/static/...`): Für angemeldete Nutzer erkennt die Plattform, aus welchem Tool die Anfrage kommt (Referer, sonst Merk-Cookie `tools_last`). Weiterleitungen wie `Location: /login` bekommen das Präfix.
+- **App läuft auf der Hauptadresse** (Standard an, „App-Modus“): Wer das Tool öffnet (Kachel, Link oder Lesezeichen auf `/<kurzname>/…`), dessen Browser merkt sich „aktive App“ und wechselt auf die Hauptadresse (`/<kurzname>/settings` → `/settings`). Ab dann gehören alle Pfade dieser App – wie auf einer eigenen Domain. Damit funktionieren absolute Links, Single-Page-Apps mit eigenem Router (z. B. Nginx Proxy Manager), Neuladen, „Home“, Zurück-Taste und Lesezeichen.
+  - **Zurück zum Portal:** `https://tools.example.de/_platform/portal` (Lesezeichen anlegen, z. B. auf dem Home-Bildschirm) oder „Zum Portal“ in der Verwaltung. Damit verlässt du die App; danach zeigt auch `/` wieder das Portal.
+  - Solange du eine App benutzt, zeigt `https://tools.example.de/` diese App (auch beim Neuladen). Nach 1 Stunde ohne Nutzung endet die App-Sitzung von selbst.
+  - **Eine App pro Browser gleichzeitig.** Öffnest du eine zweite App (Kachel), wechselt die aktive App – ein anderer Tab mit der ersten App funktioniert dann nicht mehr richtig. Für mehrere Apps parallel: „Eigene Subdomain“.
+  - Ausschalten nur, wenn die App selbst für den Unterpfad `/<kurzname>/` eingerichtet ist (Base-URL); dann läuft sie unter `/<kurzname>/`.
 - Der Dienst bekommt `X-Authentik-Username`, `X-Authentik-Groups`, `X-Authentik-Email`, `X-Authentik-Name` (für eigenes Single Sign-on).
 
 ### Tools mit eigener Subdomain (für Apps, die nur auf „/“ laufen)
@@ -108,7 +111,7 @@ Bei einem Tool **Teilen** (oder **+ Freigabe-Link**):
 - Die Liste zeigt pro Link Restlaufzeit, Öffnungen und wann er zuletzt geöffnet wurde.
 
 So funktioniert es für den Gast: Der Link `https://tools.example.de/s/<token>/` startet eine **Freigabe-Sitzung** (Cookie `tools_share`, HttpOnly, nur für diesen Browser).
-- **Apps, die auf „/“ laufen** (Weiterleitung mit „Pfad-Präfix entfernen“ oder eigene Subdomain): Der Gast wird auf `/` geschickt und nutzt die App dort wie auf einer eigenen Domain. Damit funktionieren auch Apps mit absoluten Pfaden (`/api/...`) und Single-Page-Apps.
+- **Apps, die auf „/“ laufen** (Weiterleitung mit „App läuft auf der Hauptadresse“ oder eigene Subdomain): Der Gast wird auf `/` geschickt und nutzt die App dort wie auf einer eigenen Domain. Damit funktionieren auch Apps mit absoluten Pfaden (`/api/...`) und Single-Page-Apps.
 - **Dateien-Tools und Apps mit eigener Base-URL**: laufen unter `/s/<token>/`.
 
 Zusätzliche Absicherung pro Link (alles optional, auch nachträglich über **Ändern**):

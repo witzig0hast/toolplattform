@@ -13,13 +13,13 @@
 <body>
 <header class="topbar">
   <div class="wrap topbar-inner">
-    <a class="logo" href="/">
+    <a class="logo" href="/_platform/portal">
       <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2" class="dim"/><rect x="3" y="13" width="8" height="8" rx="2" class="dim"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg>
       <span>Tools</span>
     </a>
     <nav class="crumbs"><span class="sep">/</span><span>Verwalten</span></nav>
     <span class="spacer"></span>
-    <a class="btn ghost" href="/">Zum Portal</a>
+    <a class="btn ghost" href="/_platform/portal">Zum Portal</a>
   </div>
 </header>
 <nav class="subnav" aria-label="Bereiche">
@@ -151,7 +151,7 @@
           <input id="f-upstream" maxlength="255" placeholder="http://mein-container:8080">
           <small>Container-Name oder IP mit Port, ohne Pfad. Der Container muss im Docker-Netzwerk <code>toolplattform_tools</code> hängen.</small>
         </label>
-        <label class="check" id="strip-row"><input type="checkbox" id="f-strip" checked><span>Pfad-Präfix entfernen<small>Der Dienst bekommt <code>/</code> statt <code>/&lt;pfad&gt;/</code>. Abschalten, wenn der Dienst selbst unter einem Unterpfad läuft.</small></span></label>
+        <label class="check" id="strip-row"><input type="checkbox" id="f-strip" checked><span>App läuft auf der Hauptadresse (empfohlen)<small>Nach dem Öffnen läuft die App unter <code>/</code> wie auf einer eigenen Domain – Unterseiten, Neuladen und „Home“ funktionieren. Nur ausschalten, wenn die App selbst für den Unterpfad <code>/&lt;kurzname&gt;/</code> eingerichtet ist (Base-URL).</small></span></label>
       </div>
       <div class="two">
         <label class="narrow">Symbol <span class="opt">optional</span>

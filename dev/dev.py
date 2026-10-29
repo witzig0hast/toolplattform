@@ -56,7 +56,7 @@ class Dev(server.Handler):
             return super().handle_request(method)
         if path.startswith("/authz") or path == "/healthz":
             return super().handle_request(method)
-        if path == "/":
+        if path in ("/", "/_platform/portal"):
             return self.serve(ROOT / "portal", "index.html")
         if path.startswith("/_platform/assets/"):
             return self.serve(ROOT / "portal", path[1:])
@@ -71,9 +71,10 @@ class Dev(server.Handler):
         target = res["target"]
         if target == server.MAINTENANCE_TARGET:
             return self.send_error(503, "Wartung")
-        if "/_redirect?to=" in target:
-            self.send_response(301)
-            self.send_header("Location", target.split("to=", 1)[1])
+        if "/_redirect?to=" in target or "/_go?to=" in target:
+            from urllib.parse import unquote as _uq
+            self.send_response(302)
+            self.send_header("Location", _uq(target.split("to=", 1)[1]))
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
